@@ -37,27 +37,20 @@ string generate_fifo_name(int sender_id, int receiver_id) {
     return "fifo-" + to_string(sender_id) + "-" + to_string(receiver_id);
 }
 
-vector<string> generate_connections(int switch_id, int port_2_switch_id, int port_4_switch_id) {
+vector<string> generate_connections(int switch_id, int port_1_switch_id, int port_2_switch_id) {
 	vector<string> output;
 
-	string sender_fifo_name_controller = generate_fifo_name(switch_id, CONTROLLER_ID);
-	output.push_back(sender_fifo_name_controller);
-	string receiver_fifo_name_controller = generate_fifo_name(CONTROLLER_ID, switch_id);
-	output.push_back(receiver_fifo_name_controller);
-	
+	output.push_back(generate_fifo_name(switch_id, CONTROLLER_ID));
+	output.push_back(generate_fifo_name(CONTROLLER_ID, switch_id));
 
-	if (port_2_switch_id != 0) {
-		string sender_fifo_name_port_2 = generate_fifo_name(switch_id, port_2_switch_id);
-		output.push_back(sender_fifo_name_port_2);
-		string receiver_fifo_name_port_2 = generate_fifo_name(port_2_switch_id, switch_id);
-		output.push_back(receiver_fifo_name_port_2);
+	if (port_1_switch_id != 0) {
+		output.push_back(generate_fifo_name(switch_id, port_1_switch_id));
+		output.push_back(generate_fifo_name(port_1_switch_id, switch_id));
 	}
 	
-	if (port_4_switch_id != 0) {
-		string sender_fifo_name_port_4 = generate_fifo_name(switch_id, port_4_switch_id);
-		output.push_back(sender_fifo_name_port_4);
-		string receiver_fifo_name_port_4 = generate_fifo_name(port_4_switch_id, switch_id);
-		output.push_back(receiver_fifo_name_port_4);
+	if (port_2_switch_id != 0) {
+		output.push_back(generate_fifo_name(switch_id, port_2_switch_id));
+		output.push_back(generate_fifo_name(port_2_switch_id, switch_id));
 	}
 
 	return output;
@@ -118,7 +111,7 @@ void switch_loop(vector<flow_rule> flow_table, vector<string> connections, ifstr
 void controller_loop() {}
 
 int main(int argc, char **argv) {
-	// Set a 10-minute CPU time limit
+	// Set a 10 minute CPU time limit
 	rlimit time_limit {
         .rlim_cur = 600,
         .rlim_max = 600
