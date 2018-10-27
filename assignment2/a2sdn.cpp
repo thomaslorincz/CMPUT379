@@ -20,7 +20,16 @@ static const int CONTROLLER_ID = 0;
 static const int MAX_NSW = 7;
 static const int MAXIP = 1000;
 static const int MINPRI = 4;
-static const int MAX_BUFFER = 256;
+static const int MAX_BUFFER = 1024;
+
+typedef enum {OPEN, ACK, QUERY, ADD, RELAY} PACKET_TYPE;
+
+struct packet {
+	PACKET_TYPE type;
+	int id;
+	int ip_low;
+	int ip_high;
+};
 
 struct flow_rule {
 	int srcIP_lo;
@@ -33,24 +42,31 @@ struct flow_rule {
 	int pktCount;
 };
 
-string generate_fifo_name(int sender_id, int receiver_id) {
+typedef enum {SEND, RECEIVE} MODE;
+
+struct connection {
+	MODE mode;
+	string name;
+};
+
+string make_fifo_name(int sender_id, int receiver_id) {
     return "fifo-" + to_string(sender_id) + "-" + to_string(receiver_id);
 }
 
-vector<string> generate_connections(int switch_id, int port_1_switch_id, int port_2_switch_id) {
-	vector<string> output;
+vector<connection> make_connections(int switch_id, int port_1_switch_id, int port_2_switch_id) {
+	vector<connection> output;
 
-	output.push_back(generate_fifo_name(switch_id, CONTROLLER_ID));
-	output.push_back(generate_fifo_name(CONTROLLER_ID, switch_id));
+	output.push_back({SEND, make_fifo_name(switch_id, CONTROLLER_ID)});
+	output.push_back({RECEIVE, make_fifo_name(CONTROLLER_ID, switch_id)});
 
 	if (port_1_switch_id != 0) {
-		output.push_back(generate_fifo_name(switch_id, port_1_switch_id));
-		output.push_back(generate_fifo_name(port_1_switch_id, switch_id));
+		output.push_back({SEND, make_fifo_name(switch_id, port_1_switch_id)});
+		output.push_back({RECEIVE, make_fifo_name(port_1_switch_id, switch_id)});
 	}
 	
 	if (port_2_switch_id != 0) {
-		output.push_back(generate_fifo_name(switch_id, port_2_switch_id));
-		output.push_back(generate_fifo_name(port_2_switch_id, switch_id));
+		output.push_back({SEND, make_fifo_name(switch_id, port_2_switch_id)});
+		output.push_back({RECEIVE, make_fifo_name(port_2_switch_id, switch_id)});
 	}
 
 	return output;
@@ -92,16 +108,43 @@ tuple<int, int> process_ip_range(const string &input) {
     return make_tuple(ip_low, ip_high);
 }
 
-void switch_loop(vector<flow_rule> flow_table, vector<string> connections, ifstream &in) {
-	// Create FIFOs for all connections
-	for (auto &this_fifo_name : connections) {
-		int status = mkfifo(this_fifo_name.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+void switch_loop(int id, tuple<int, int> ip_range, vector<flow_rule> flow_table, vector<connection> connections, ifstream &in) {
+	char buffer[MAX_BUFFER];
+    struct pollfd pfds[2 * connections.size()]; // Both way connections
+
+	// Create and open FIFOs for all connections
+	int i;
+	for (auto &this_connection : connections) {
+		int status = mkfifo(this_connection.name.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
     	if (errno || status == -1) {
+			errno = 0;
+			printf("FIFO: %s\n", this_connection.name.c_str());
         	perror("Error: Could not create a FIFO connection.\n");
-			return;
+			continue;
     	}
+
+		int rw_flag = (this_connection.mode == MODE::SEND) ? O_WRONLY : O_RDONLY;
+
+		// Returns lowest unused file descriptor on success
+		if (this_connection.mode == MODE::RECEIVE) {
+			int fd = open(this_connection.name.c_str(), rw_flag | O_NONBLOCK);
+			if (errno || fd == -1) {
+				errno = 0;
+				printf("FIFO: %s\n", this_connection.name.c_str());
+				perror("Error: Could not open FIFO.\n");
+			}
+
+			pfds[i].fd = fd;
+		}
+
+		i++;
 	}
 
+	// Send an OPEN packet to the controller
+	packet open_packet = {OPEN, id, get<0>(ip_range), get<1>(ip_range)};
+	write(pfds[0].fd, &open_packet, sizeof(struct packet));
+
+	// TODO: Read file properly. This is just a test.
 	string str;
 	while (getline(in, str)) {
 		cout << str << endl;
@@ -137,8 +180,8 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 
-		int switchId = parse_switch_id(argv[1]);
-		if (switchId == -1) {
+		int switch_id = parse_switch_id(argv[1]);
+		if (switch_id == -1) {
 			printf("Error: Switch ID is invalid.\n");
 			return 1;
 		}
@@ -173,9 +216,9 @@ int main(int argc, char **argv) {
 		flow_rule initial_rule = {0, MAXIP,	get<0>(ip_range), get<1>(ip_range),	"FORWARD", 3, MINPRI, 0};
 		flow_table.push_back(initial_rule);
 
-		vector<string> connections = generate_connections(switchId, switchId1, switchId2);
+		vector<connection> connections = make_connections(switch_id, switchId1, switchId2);
 
-		switch_loop(flow_table, connections, in);
+		switch_loop(switch_id, ip_range, flow_table, connections, in);
 	}
 
     return 0;
