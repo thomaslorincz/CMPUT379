@@ -1,8 +1,9 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <string.h>  // memset(3)
+#include <string.h>  // memset
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -12,7 +13,7 @@
 #include <fstream>    // std::fstream::in
 #include <iostream>
 #include <sstream>
-#include <string>  // std::string
+#include <string>  // std::string, std::to_string
 #include <tuple>   // std::tuple
 #include <vector>  // std::vector
 
@@ -28,9 +29,7 @@ typedef enum { OPEN, ACK, QUERY, ADD, RELAY } PACKET_TYPE;
 
 typedef struct {
   PACKET_TYPE type;
-  int id;
-  int ip_low;
-  int ip_high;
+  string message;
 } packet;
 
 typedef struct {
@@ -50,6 +49,34 @@ typedef struct {
   MODE mode;
   string name;
 } connection;
+
+string packet_to_string(packet &p) {
+  return to_string(p.type) + ":" + p.message;
+}
+
+packet parse_packet_string(string &s) {
+  string packet_type_token = s.substr(0, s.find(":"));
+  PACKET_TYPE type =
+      (PACKET_TYPE)strtol(packet_type_token.c_str(), (char **)NULL, 10);
+
+  string packet_message_token = s.substr(s.find(":") + 1);
+
+  return {type, packet_message_token};
+}
+
+vector<int> parse_open_message(string &m) {
+  vector<int> vect;
+  stringstream ss(m);
+
+  // Split packet string into ints (comma delimited)
+  int i = 0;
+  while (ss >> i) {
+    vect.push_back(i);
+    if (ss.peek() == ',') ss.ignore();
+  }
+
+  return vect;
+}
 
 // Trim from start (in place)
 static inline void ltrim(string &s) {
@@ -81,12 +108,12 @@ vector<connection> make_connections(int switch_id, int port_1_switch_id,
   output.push_back({SEND, make_fifo_name(switch_id, CONTROLLER_ID)});
   output.push_back({RECEIVE, make_fifo_name(CONTROLLER_ID, switch_id)});
 
-  if (port_1_switch_id != 0) {
+  if (port_1_switch_id != -1) {
     output.push_back({SEND, make_fifo_name(switch_id, port_1_switch_id)});
     output.push_back({RECEIVE, make_fifo_name(port_1_switch_id, switch_id)});
   }
 
-  if (port_2_switch_id != 0) {
+  if (port_2_switch_id != -1) {
     output.push_back({SEND, make_fifo_name(switch_id, port_2_switch_id)});
     output.push_back({RECEIVE, make_fifo_name(port_2_switch_id, switch_id)});
   }
@@ -94,14 +121,12 @@ vector<connection> make_connections(int switch_id, int port_1_switch_id,
   return output;
 }
 
+// TODO: Perhaps error handling
 int parse_switch_id(const string &input) {
   if (input == "null") {
-    return 0;
+    return -1;
   } else {
     string number = input.substr(2, input.length() - 1);
-    if (number == "") {
-      return -1;
-    }
     return (int)strtol(number.c_str(), (char **)NULL, 10);
   }
 }
@@ -130,32 +155,36 @@ tuple<int, int> process_ip_range(const string &input) {
   return make_tuple(ip_low, ip_high);
 }
 
-void switch_loop(int id, tuple<int, int> ip_range, vector<flow_rule> flow_table,
-                 vector<connection> connections, ifstream &in) {
-  errno = 0;
-
+void switch_loop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
+                 vector<flow_rule> flow_table, vector<connection> connections,
+                 ifstream &in) {
   char buffer[MAX_BUFFER];
-  struct pollfd pfds[2 * connections.size()];  // Both way connections
+  struct pollfd pfds[2 * connections.size() + 1];  // Both way connections
+  pfds[0].fd = STDIN_FILENO;
 
   // Create and open FIFOs for all connections
-  int i = 0;
+  int i = 1;
   for (auto &this_connection : connections) {
+    errno = 0;
     int status =
         mkfifo(this_connection.name.c_str(),
                S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-    if (errno || status == -1) {
+
+    if (errno != 0 && errno != EEXIST) {
       printf("FIFO: %s\n", this_connection.name.c_str());
       perror("Error: Could not create a FIFO connection.\n");
     }
+    errno = 0;
 
-    int rw_flag = (this_connection.mode == MODE::SEND) ? O_WRONLY : O_RDONLY;
+    int rw_flag = (this_connection.mode == SEND) ? O_WRONLY : O_RDONLY;
 
     // Returns lowest unused file descriptor on success
     int fd = open(this_connection.name.c_str(), rw_flag | O_NONBLOCK);
-    if (errno || fd == -1) {
+    if (errno) {
       printf("FIFO: %s\n", this_connection.name.c_str());
       perror("Error: Could not open FIFO.\n");
     }
+    errno = 0;
 
     pfds[i].fd = fd;
 
@@ -163,14 +192,13 @@ void switch_loop(int id, tuple<int, int> ip_range, vector<flow_rule> flow_table,
   }
 
   // Send an OPEN packet to the controller
-  packet open_packet = {OPEN, id, get<0>(ip_range), get<1>(ip_range)};
-  write(pfds[0].fd, &open_packet, sizeof(packet));
+  string open_message =
+      to_string(id) + "," + to_string(port_1_id) + "," + to_string(port_2_id) +
+      "," + to_string(get<0>(ip_range)) + "," + to_string(get<1>(ip_range));
+  packet open_packet = {OPEN, open_message};
+  write(pfds[1].fd, &open_packet, sizeof(packet));
 
-  // TODO: Read file properly. This is just a test.
-  string str;
-  while (getline(in, str)) {
-    cout << str << endl;
-  }
+  // while (true) {}
 }
 
 void controller_list() {}
@@ -314,16 +342,7 @@ int main(int argc, char **argv) {
     }
 
     int switchId1 = parse_switch_id(argv[3]);
-    if (switchId1 == -1) {
-      printf("Error: Switch ID is invalid.\n");
-      return 1;
-    }
-
     int switchId2 = parse_switch_id(argv[4]);
-    if (switchId2 == -1) {
-      printf("Error: Switch ID is invalid.\n");
-      return 1;
-    }
 
     tuple<int, int> ip_range = process_ip_range(argv[5]);
 
@@ -340,7 +359,8 @@ int main(int argc, char **argv) {
     vector<connection> connections =
         make_connections(switch_id, switchId1, switchId2);
 
-    switch_loop(switch_id, ip_range, flow_table, connections, in);
+    switch_loop(switch_id, switchId1, switchId2, ip_range, flow_table,
+                connections, in);
   }
 
   return 0;
