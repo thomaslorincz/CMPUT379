@@ -111,35 +111,32 @@ tuple<int, int> process_ip_range(const string &input) {
 
 void switch_loop(int id, tuple<int, int> ip_range, vector<flow_rule> flow_table,
                  vector<connection> connections, ifstream &in) {
+  errno = 0;
+
   char buffer[MAX_BUFFER];
   struct pollfd pfds[2 * connections.size()];  // Both way connections
 
   // Create and open FIFOs for all connections
-  int i;
+  int i = 0;
   for (auto &this_connection : connections) {
     int status =
         mkfifo(this_connection.name.c_str(),
                S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
     if (errno || status == -1) {
-      errno = 0;
       printf("FIFO: %s\n", this_connection.name.c_str());
       perror("Error: Could not create a FIFO connection.\n");
-      continue;
     }
 
     int rw_flag = (this_connection.mode == MODE::SEND) ? O_WRONLY : O_RDONLY;
 
     // Returns lowest unused file descriptor on success
-    if (this_connection.mode == MODE::RECEIVE) {
-      int fd = open(this_connection.name.c_str(), rw_flag | O_NONBLOCK);
-      if (errno || fd == -1) {
-        errno = 0;
-        printf("FIFO: %s\n", this_connection.name.c_str());
-        perror("Error: Could not open FIFO.\n");
-      }
-
-      pfds[i].fd = fd;
+    int fd = open(this_connection.name.c_str(), rw_flag | O_NONBLOCK);
+    if (errno || fd == -1) {
+      printf("FIFO: %s\n", this_connection.name.c_str());
+      perror("Error: Could not open FIFO.\n");
     }
+
+    pfds[i].fd = fd;
 
     i++;
   }
@@ -155,26 +152,68 @@ void switch_loop(int id, tuple<int, int> ip_range, vector<flow_rule> flow_table,
   }
 }
 
-void controller_loop() {}
+void controller_loop(int num_switches) {
+  errno = 0;
+
+  vector<connection> connections;
+
+  for (int i = 1; i <= num_switches; i++) {
+    connections.push_back({RECEIVE, make_fifo_name(i, CONTROLLER_ID)});
+  }
+
+  struct pollfd pfds[2 * connections.size() + 1];
+  pfds[0].fd = STDIN_FILENO;
+  char buffer[MAX_BUFFER];
+
+  int j = 0;
+  for (auto &this_connection : connections) {
+    int status =
+        mkfifo(this_connection.name.c_str(),
+               S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    if (errno || status == -1) {
+      printf("FIFO: %s\n", this_connection.name.c_str());
+      perror("Error: Could not create a FIFO connection.\n");
+    }
+
+    // Returns lowest unused file descriptor on success
+    int fd = open(this_connection.name.c_str(), O_RDONLY | O_NONBLOCK);
+    if (errno || fd == -1) {
+      printf("FIFO: %s\n", this_connection.name.c_str());
+      perror("Error: Could not open FIFO.\n");
+    }
+
+    pfds[j].fd = fd;
+
+    j++;
+  }
+}
 
 int main(int argc, char **argv) {
   // Set a 10 minute CPU time limit
   rlimit time_limit{.rlim_cur = 600, .rlim_max = 600};
   setrlimit(RLIMIT_CPU, &time_limit);
 
-  if (argc < 3) {
+  if (argc < 2) {
     printf("Too few arguments.\n");
     return 1;
   }
 
   string mode = argv[1];  // cont or swi
   if (mode == "cont") {
+    if (argc != 3) {
+      printf("Error: Invalid number of arguments. Expected 3.\n");
+      return 1;
+    }
+
     int num_switches = (int)strtol(argv[2], (char **)NULL, 10);
     if (num_switches > MAX_NSW || num_switches < 1) {
       printf("Error: Invalid number of switches. Must be 1-7.\n");
       return 1;
     }
-    controller_loop();
+
+    printf("%i\n", num_switches);
+
+    controller_loop(num_switches);
   } else if (mode.find("sw") != std::string::npos) {
     if (argc != 6) {
       printf("Error: Invalid number of arguments. Expected 6.\n");
