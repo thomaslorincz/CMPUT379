@@ -7,10 +7,10 @@
 # ------------------------------------------------------------
 
 target = submit
-allFiles = Makefile a2sdn.cpp
+allFiles = Makefile a2sdn.cpp controller.cpp controller.h switch.cpp switch.h util.cpp util.h
 
 compile:
-	g++ -std=c++11 -Wall a2sdn.cpp -o a2sdn
+	g++ -std=c++11 -Wall a2sdn.cpp controller.cpp controller.h switch.cpp switch.h util.cpp util.h -o a2sdn
 
 tar:
 	tar -cvf $(target).tar $(allFiles)
