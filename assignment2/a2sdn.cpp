@@ -49,6 +49,14 @@ typedef struct {
   string fifo;
 } connection;
 
+typedef struct {
+  int id;
+  int port1Id;
+  int port2Id;
+  int ipLow;
+  int ipHigh;
+} switch_info;
+
 string packet_to_string(packet &p) {
   return to_string(p.type) + ":" + p.message;
 }
@@ -63,7 +71,7 @@ packet parse_packet_string(string &s) {
   return {type, packet_message_token};
 }
 
-vector<int> parse_open_message(string &m) {
+switch_info parse_open_message(string &m) {
   vector<int> vect;
   stringstream ss(m);
 
@@ -78,7 +86,7 @@ vector<int> parse_open_message(string &m) {
     printf("Error: Invalid OPEN packet.\n");
   }
 
-  return vect;
+  return {vect[0], vect[1], vect[2], vect[3], vect[4]};
 }
 
 // Trim from start (in place)
@@ -141,13 +149,17 @@ tuple<int, int> process_ip_range(const string &input) {
 void switch_list() { printf("List:\n"); }
 
 void switch_loop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
-                 vector<flow_rule> flow_table, ifstream &in) {
+                 ifstream &in) {
+  vector<flow_rule> flow_table;
+  flow_rule initial_rule = {
+      0, MAXIP, get<0>(ip_range), get<1>(ip_range), "FORWARD", 3, MINPRI, 0};
+  flow_table.push_back(initial_rule);
+
   vector<int> activeIds;
   activeIds.push_back(id);
   if (port_1_id != -1) activeIds.push_back(port_1_id);
   if (port_2_id != -1) activeIds.push_back(port_2_id);
 
-  vector<connection> receive_connections;
   vector<connection> send_connections;
 
   char buffer[MAX_BUFFER];
@@ -198,8 +210,7 @@ void switch_loop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
       if (pfds[i].revents & POLLIN) {
         ssize_t r = read(pfds[i].fd, buffer, MAX_BUFFER);
         if (!r) {
-          printf("Warning: Connection %s closed.\n",
-                 receive_connections[i].fifo.c_str());
+          printf("Warning: Connection closed.\n");
         }
         string packet_string = string(buffer);
         packet received_packet = parse_packet_string(packet_string);
@@ -223,12 +234,27 @@ void switch_loop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   }
 }
 
-void controller_list() { printf("List:\n"); }
+void controller_list(vector<switch_info> switchInfoTable, int open, int query,
+                     int ack, int add) {
+  printf("Switch information:\n");
+  for (auto &this_info : switchInfoTable) {
+    printf("[sw%i]: port1= %i, port2= %i, port3= %i-%i\n", this_info.id,
+           this_info.port1Id, this_info.port2Id, this_info.ipLow,
+           this_info.ipHigh);
+  }
+  printf("Packet stats:\n");
+  printf("\tReceived:    OPEN:%i, QUERY:%i\n", open, query);
+  printf("\tTransmitted: ACK:%i, ADD:%i\n", ack, add);
+}
 
 void controller_loop(int num_switches) {
-  // Generate receiver connections and FIFO names
-  vector<connection> receive_connections;
-  vector<connection> send_connections;
+  vector<switch_info> switchInfoTable;
+  int openCount = 0;
+  int queryCount = 0;
+  int ackCount = 0;
+  int addCount = 0;
+
+  map<int, int> id_to_fd;  // Mapping switch IDs to FDs
 
   struct pollfd pfds[num_switches + 1];
   pfds[0].fd = STDIN_FILENO;
@@ -253,9 +279,6 @@ void controller_loop(int num_switches) {
     pfds[i].fd = fd;
     pfds[i].events = POLLIN;
     pfds[i].revents = 0;
-
-    send_connections.push_back({-1, ""});  // Placeholders
-    receive_connections.push_back({fd, fifo_name});
   }
 
   while (true) {
@@ -278,9 +301,11 @@ void controller_loop(int num_switches) {
       trim(cmd);  // Trim whitespace
 
       if (cmd == "list") {
-        controller_list();
+        controller_list(switchInfoTable, openCount, queryCount, ackCount,
+                        addCount);
       } else if (cmd == "exit") {
-        controller_list();
+        controller_list(switchInfoTable, openCount, queryCount, ackCount,
+                        addCount);
         exit(0);
       } else {
         printf("Error: Unrecognized command. Please use list or exit.\n");
@@ -295,8 +320,8 @@ void controller_loop(int num_switches) {
       if (pfds[i].revents & POLLIN) {
         ssize_t r = read(pfds[i].fd, buffer, MAX_BUFFER);
         if (!r) {
-          printf("Warning: Connection %s closed.\n",
-                 receive_connections[i].fifo.c_str());
+          string closed_fifo = make_fifo_name(i, CONTROLLER_ID);
+          printf("Warning: Connection %s closed.\n", closed_fifo.c_str());
         }
         string packet_string = string(buffer);
         packet received_packet = parse_packet_string(packet_string);
@@ -304,16 +329,17 @@ void controller_loop(int num_switches) {
         printf("Received packet: %s\n", buffer);
 
         if (received_packet.type == OPEN) {
-          // TODO: Make flow table rule
-          vector<int> package_data =
-              parse_open_message(received_packet.message);
+          openCount++;
+
+          switch_info new_info = parse_open_message(received_packet.message);
+          switchInfoTable.push_back(new_info);
 
           // Returns lowest unused file descriptor on success
           string fifo_name = make_fifo_name(CONTROLLER_ID, i);
           int fd = open(fifo_name.c_str(), O_WRONLY | O_NONBLOCK);
           if (errno) perror("Error: Could not open FIFO.\n");
           errno = 0;
-          send_connections[i] = {fd, fifo_name};
+          id_to_fd.insert({i, fd});
 
           string ack_message = to_string(ACK) + ":";
 
@@ -321,11 +347,11 @@ void controller_loop(int num_switches) {
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
         } else if (received_packet.type == QUERY) {
+          queryCount++;
           // TODO: Reply with an ADD packet (message is the flow table rule)
           string add_message = to_string(ADD) + ":";
 
-          write(send_connections[i].fd, add_message.c_str(),
-                strlen(add_message.c_str()));
+          write(id_to_fd[i], add_message.c_str(), strlen(add_message.c_str()));
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
         } else {
@@ -373,8 +399,8 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    int switch_id = parse_switch_id(argv[1]);
-    if (switch_id == -1) {
+    int switchId = parse_switch_id(argv[1]);
+    if (switchId == -1) {
       printf("Error: Switch ID is invalid.\n");
       return 1;
     }
@@ -389,19 +415,14 @@ int main(int argc, char **argv) {
     int switchId1 = parse_switch_id(argv[3]);
     int switchId2 = parse_switch_id(argv[4]);
 
-    tuple<int, int> ip_range = process_ip_range(argv[5]);
+    tuple<int, int> ipRange = process_ip_range(argv[5]);
 
-    if (get<0>(ip_range) == -1 && get<1>(ip_range) == -1) {
+    if (get<0>(ipRange) == -1 && get<1>(ipRange) == -1) {
       printf("Error: Malformed IP range.\n");
       return 1;
     }
 
-    vector<flow_rule> flow_table;
-    flow_rule initial_rule = {
-        0, MAXIP, get<0>(ip_range), get<1>(ip_range), "FORWARD", 3, MINPRI, 0};
-    flow_table.push_back(initial_rule);
-
-    switch_loop(switch_id, switchId1, switchId2, ip_range, flow_table, in);
+    switch_loop(switchId, switchId1, switchId2, ipRange, in);
   }
 
   return 0;
