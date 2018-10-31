@@ -12,16 +12,30 @@
 
 using namespace std;
 
-// TODO: Perhaps error handling
+/**
+ * Parses switch ID from command line argument input.
+ * Returns switch ID if ID is valid. Returns -1 if switch has no connection to
+ * its port. Exits program if the switch ID is invalid.
+ */
 int ParseSwitchId(const string &input) {
   if (input == "null") {
     return -1;
   } else {
     string number = input.substr(2, input.length() - 1);
-    return (int)strtol(number.c_str(), (char **)NULL, 10);
+    int switch_id = (int)strtol(number.c_str(), (char **)NULL, 10);
+    if (switch_id < 1 || switch_id > 7 || errno) {
+      printf("Error: Invalid switch ID. Expected 1-7.\n");
+      exit(1);
+    }
+    return switch_id;
   }
 }
 
+/**
+ * Parses IP range from command line argument input.
+ * Returns a tuple comprised of the lower and upper IP range bounds if
+ * successful. Exits the program if there is an error in parsing.
+ */
 tuple<int, int> ParseIpRange(const string &input) {
   int ip_low;
   int ip_high;
@@ -34,13 +48,27 @@ tuple<int, int> ParseIpRange(const string &input) {
     if (token.length()) {
       if (i == 0) {
         ip_low = (int)strtol(token.c_str(), (char **)NULL, 10);
+        if (ip_low < 0 || ip_low > MAXIP || errno) {
+          printf("Error: Invalid IP lower bound.\n");
+          exit(1);
+        }
       } else if (i == 1) {
         ip_high = (int)strtol(token.c_str(), (char **)NULL, 10);
+        if (ip_high < 0 || ip_high > MAXIP || errno) {
+          printf("Error: Invalid IP lower bound.\n");
+          exit(1);
+        }
       }
       i++;
     } else {
-      return make_tuple(-1, -1);
+      printf("Error: Malformed IP range.\n");
+      exit(1);
     }
+  }
+
+  if (ip_high < ip_low) {
+    printf("Error: Invalid range.\n");
+    exit(1);
   }
 
   return make_tuple(ip_low, ip_high);
@@ -68,7 +96,7 @@ int main(int argc, char **argv) {
     }
 
     int num_switches = (int)strtol(argv[2], (char **)NULL, 10);
-    if (num_switches > MAX_NSW || num_switches < 1) {
+    if (num_switches > MAX_NSW || num_switches < 1 || errno) {
       printf("Error: Invalid number of switches. Must be 1-7.\n");
       return 1;
     }
@@ -81,10 +109,6 @@ int main(int argc, char **argv) {
     }
 
     int switch_id = ParseSwitchId(argv[1]);
-    if (switch_id == -1) {
-      printf("Error: Switch ID is invalid.\n");
-      return 1;
-    }
 
     ifstream in(argv[2]);
 
@@ -98,12 +122,10 @@ int main(int argc, char **argv) {
 
     tuple<int, int> ip_range = ParseIpRange(argv[5]);
 
-    if (get<0>(ip_range) == -1 && get<1>(ip_range) == -1) {
-      printf("Error: Malformed IP range.\n");
-      return 1;
-    }
-
     SwitchLoop(switch_id, switch_id_1, switch_id_2, ip_range, in);
+  } else {
+    printf("Error: Invalid mode specified.\n");
+    return 1;
   }
 
   return 0;
