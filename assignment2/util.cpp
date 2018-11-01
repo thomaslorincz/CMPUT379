@@ -1,14 +1,10 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace std;
-
-typedef struct {
-  string type;
-  string message;
-} Packet;
 
 vector<int> ParsePacketMessage(string &m) {
   vector<int> vect;
@@ -28,16 +24,13 @@ string MakeFifoName(int sender_id, int receiver_id) {
   return "fifo-" + to_string(sender_id) + "-" + to_string(receiver_id);
 }
 
-string PacketToString(Packet &p) {
-  return p.type + ":" + p.message;
-}
-
-Packet ParsePacketString(string &s) {
+pair<string, vector<int>> ParsePacketString(string &s) {
   string packet_type = s.substr(0, s.find(":"));
 
   string packet_message_token = s.substr(s.find(":") + 1);
+  vector<int> packet_message = ParsePacketMessage(packet_message_token);
 
-  return {packet_type, packet_message_token};
+  return make_pair(packet_type, packet_message);
 }
 
 /**

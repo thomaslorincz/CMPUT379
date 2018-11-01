@@ -36,6 +36,24 @@ typedef struct {
   string fifo;
 } connection;
 
+int CreateFifo(int src, int dest, int flag) {
+  string fifo_name = MakeFifoName(src, dest);
+
+  mkfifo(fifo_name.c_str(),
+         S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+  if (errno) perror("Error: Could not create a FIFO connection.\n");
+  errno = 0;
+
+  // Returns lowest unused file descriptor on success
+  int fd = open(fifo_name.c_str(), flag);
+  if (errno) perror("Error: Could not open FIFO.\n");
+  errno = 0;
+
+  printf("Created %s fd = %i\n", fifo_name.c_str(), fd);
+
+  return fd;
+}
+
 tuple<int, int, int> ParseTrafficFileLine(string &line) {
   int id;
   int src_ip;
@@ -118,87 +136,35 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   pfds[0].events = POLLIN;
   pfds[0].revents = 0;
 
-  string read_fifo_name = MakeFifoName(CONTROLLER_ID, id);
-
-  mkfifo(read_fifo_name.c_str(),
-         S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-  if (errno) perror("Error: Could not create a FIFO connection.\n");
-  errno = 0;
-
-  // Returns lowest unused file descriptor on success
-  int read_fd = open(read_fifo_name.c_str(), O_RDONLY | O_NONBLOCK);
-  if (errno) perror("Error: Could not open FIFO.\n");
-  errno = 0;
-
-  printf("Created %s fd = %i\n", read_fifo_name.c_str(), read_fd);
-
-  pfds[1].fd = read_fd;
+  // TODO: Error handling
+  int fd1 = CreateFifo(CONTROLLER_ID, id, O_RDONLY | O_NONBLOCK);
+  pfds[1].fd = fd1;
   pfds[1].events = POLLIN;
   pfds[1].revents = 0;
 
-  string write_fifo_name = MakeFifoName(id, CONTROLLER_ID);
-
-  // Returns lowest unused file descriptor on success
-  int write_fd = open(write_fifo_name.c_str(), O_WRONLY);
-  if (errno) perror("Error: Could not open FIFO.\n");
-  errno = 0;
-
-  send_connections.insert(
-      pair<int, connection>(CONTROLLER_ID, {write_fd, write_fifo_name}));
+  int fd2 = CreateFifo(id, CONTROLLER_ID, O_WRONLY);
+  send_connections.insert(pair<int, connection>(
+      CONTROLLER_ID, {fd2, MakeFifoName(id, CONTROLLER_ID)}));
 
   // Send an OPEN packet to the controller
   string open_message = "OPEN:" + to_string(id) + "," + to_string(port_1_id) +
                         "," + to_string(port_2_id) + "," +
                         to_string(get<0>(ip_range)) + "," +
                         to_string(get<1>(ip_range));
-  write(write_fd, open_message.c_str(), strlen(open_message.c_str()));
+  write(fd2, open_message.c_str(), strlen(open_message.c_str()));
   if (errno) perror("Error: Failed to write.\n");
   errno = 0;
   open_count++;
 
-  // TODO: Refactor/simplify
   if (port_1_id != -1) {
-    string port_1_fifo = MakeFifoName(port_1_id, id);
-
-    mkfifo(port_1_fifo.c_str(),
-           S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-    if (errno) perror("Error: Could not create a FIFO connection.\n");
-    errno = 0;
-
-    // Returns lowest unused file descriptor on success
-    int port_1_fd = open(port_1_fifo.c_str(), O_RDONLY | O_NONBLOCK);
-    if (errno) perror("Error: Could not open FIFO.\n");
-    errno = 0;
-
-    send_connections.insert(
-        pair<int, connection>(port_1_id, {port_1_fd, port_1_fifo}));
-
-    printf("Created %s fd = %i\n", port_1_fifo.c_str(), port_1_fd);
-
+    int port_1_fd = CreateFifo(port_1_id, id, O_RDONLY | O_NONBLOCK);
     pfds[2].fd = port_1_fd;
     pfds[2].events = POLLIN;
     pfds[2].revents = 0;
   }
 
-  // TODO: Refactor/simplify
   if (port_2_id != -1) {
-    string port_2_fifo = MakeFifoName(port_2_id, id);
-
-    mkfifo(port_2_fifo.c_str(),
-           S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-    if (errno) perror("Error: Could not create a FIFO connection.\n");
-    errno = 0;
-
-    // Returns lowest unused file descriptor on success
-    int port_2_fd = open(port_2_fifo.c_str(), O_RDONLY | O_NONBLOCK);
-    if (errno) perror("Error: Could not open FIFO.\n");
-    errno = 0;
-
-    send_connections.insert(
-        pair<int, connection>(port_2_id, {port_2_fd, port_2_fifo}));
-
-    printf("Created %s fd = %i\n", port_2_fifo.c_str(), port_2_fd);
-
+    int port_2_fd = CreateFifo(port_2_id, id, O_RDONLY | O_NONBLOCK);
     pfds[3].fd = port_2_fd;
     pfds[3].events = POLLIN;
     pfds[3].revents = 0;
@@ -264,7 +230,8 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
       }
     }
 
-    poll(pfds, receivers + 1, 20);  // Slight delay to wait for QUERY
+    // Slight delay to wait for ADD
+    poll(pfds, receivers + 1, 20);
     if (errno) perror("Error: poll() failure.\n");
     errno = 0;
 
@@ -306,35 +273,22 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
           printf("Warning: Connection closed.\n");
         }
         string packet_string = string(buffer);
-        Packet received_packet = ParsePacketString(packet_string);
+        pair<string, vector<int>> received_packet =
+            ParsePacketString(packet_string);
+        string packet_type = get<0>(received_packet);
+        vector<int> packet_message = get<1>(received_packet);
 
         printf("Received packet: %s\n", buffer);
 
-        if (received_packet.type == "ACK") {
+        if (packet_type == "ACK") {
           ack_count++;
-        } else if (received_packet.type == "ADD") {
-          vector<int> new_rule_specs =
-              ParsePacketMessage(received_packet.message);
+        } else if (packet_type == "ADD") {
           flow_rule new_rule;
           string new_action;
-          if (new_rule_specs[0] == 0) {
-            new_rule = {0,
-                        MAXIP,
-                        new_rule_specs[1],
-                        new_rule_specs[2],
-                        "DROP",
-                        0,
-                        MINPRI,
-                        1};
-          } else if (new_rule_specs[0] == 1) {
-            new_rule = {0,
-                        MAXIP,
-                        new_rule_specs[1],
-                        new_rule_specs[2],
-                        "FORWARD",
-                        new_rule_specs[3],
-                        MINPRI,
-                        1};
+          if (packet_message[0] == 0) {
+            new_rule = {0, MAXIP, packet_message[1], packet_message[2], "DROP", 0, MINPRI, 1};
+          } else if (packet_message[0] == 1) {
+            new_rule = {0, MAXIP, packet_message[1], packet_message[2], "FORWARD", packet_message[3], MINPRI, 1};
           } else {
             printf("Error: Invalid rule to add.\n");
             continue;
@@ -342,11 +296,10 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
 
           flow_table.push_back(new_rule);
           add_rule_count++;
-        } else if (received_packet.type == "RELAY") {
+        } else if (packet_type == "RELAY") {
           relay_in_count++;
         } else {
-          printf("Received %s packet. Ignored.\n",
-                 received_packet.type.c_str());
+          printf("Received %s packet. Ignored.\n", packet_type.c_str());
         }
       }
     }

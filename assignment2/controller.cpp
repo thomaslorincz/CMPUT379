@@ -8,6 +8,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include "util.h"
 
@@ -24,35 +25,6 @@ typedef struct {
   int ipLow;
   int ipHigh;
 } SwitchInfo;
-
-// TODO: Use new util ParsePacketMessage
-int ParseQueryMessage(string &m) {
-  int query_ip = (int)strtol(m.c_str(), (char **)NULL, 10);
-  if (query_ip > MAXIP || query_ip < 0 || errno) {
-    printf("Error: Invalid IP for QUERY. Dropping.\n");
-    return -1;
-  }
-  return query_ip;
-}
-
-// TODO: Use new util ParsePacketMessage
-SwitchInfo ParseOpenMessage(string &m) {
-  vector<int> vect;
-  stringstream ss(m);
-
-  // Split packet string into ints (comma delimited)
-  int i = 0;
-  while (ss >> i) {
-    vect.push_back(i);
-    if (ss.peek() == ',') ss.ignore();
-  }
-
-  if (vect.size() < 5) {
-    printf("Error: Invalid OPEN packet.\n");
-  }
-
-  return {vect[0], vect[1], vect[2], vect[3], vect[4]};
-}
 
 void ControllerList(vector<SwitchInfo> switch_info_table, int open, int query,
                     int ack, int add) {
@@ -143,15 +115,24 @@ void ControllerLoop(int num_switches) {
           printf("Warning: Connection closed.\n");
         }
         string packet_string = string(buffer);
-        Packet received_packet = ParsePacketString(packet_string);
+        pair<string, vector<int>> received_packet =
+            ParsePacketString(packet_string);
+        string packet_type = get<0>(received_packet);
+        vector<int> packet_message = get<1>(received_packet);
 
         printf("Received packet: %s\n", buffer);
 
-        if (received_packet.type == "OPEN") {
+        if (packet_type == "OPEN") {
           open_count++;
 
-          SwitchInfo new_info = ParseOpenMessage(received_packet.message);
-          switch_info_table.push_back(new_info);
+          if (packet_message.size() < 5) {
+            printf("Error: Invalid OPEN packet.\n");
+            continue;
+          }
+
+          switch_info_table.push_back({packet_message[0], packet_message[1],
+                                       packet_message[2], packet_message[3],
+                                       packet_message[4]});
 
           // Returns lowest unused file descriptor on success
           string fifo_name = MakeFifoName(CONTROLLER_ID, i);
@@ -167,11 +148,14 @@ void ControllerLoop(int num_switches) {
           errno = 0;
 
           ack_count++;
-        } else if (received_packet.type == "QUERY") {
+        } else if (packet_type == "QUERY") {
           query_count++;
 
-          int query_ip = ParseQueryMessage(received_packet.message);
-          if (query_ip == -1) continue;
+          int query_ip = packet_message[0];
+          if (query_ip > MAXIP || query_ip < 0) {
+            printf("Error: Invalid IP for QUERY. Dropping.\n");
+            continue;
+          }
 
           bool found = false;
           for (auto &info : switch_info_table) {
@@ -193,7 +177,8 @@ void ControllerLoop(int num_switches) {
           }
 
           if (!found) {
-            string add_message = "ADD:0," + to_string(query_ip) + "," + to_string(query_ip);
+            string add_message =
+                "ADD:0," + to_string(query_ip) + "," + to_string(query_ip);
             write(id_to_fd[i], add_message.c_str(),
                   strlen(add_message.c_str()));
             if (errno) perror("Error: Could not write.\n");
@@ -202,8 +187,7 @@ void ControllerLoop(int num_switches) {
 
           add_count++;
         } else {
-          printf("Received %s packet. Ignored.\n",
-                 received_packet.type.c_str());
+          printf("Received %s packet. Ignored.\n", packet_type.c_str());
         }
       }
     }
