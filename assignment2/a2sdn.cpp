@@ -6,30 +6,12 @@
 #include <tuple>
 #include "controller.h"
 #include "switch.h"
+#include "util.h"
 
 #define MAX_NSW 7
 #define MAXIP 1000
 
 using namespace std;
-
-/**
- * Parses switch ID from command line argument input.
- * Returns switch ID if ID is valid. Returns -1 if switch has no connection to
- * its port. Exits program if the switch ID is invalid.
- */
-int ParseSwitchId(const string &input) {
-  if (input == "null") {
-    return -1;
-  } else {
-    string number = input.substr(2, input.length() - 1);
-    int switch_id = (int)strtol(number.c_str(), (char **)NULL, 10);
-    if (switch_id < 1 || switch_id > 7 || errno) {
-      printf("Error: Invalid switch ID. Expected 1-7.\n");
-      exit(1);
-    }
-    return switch_id;
-  }
-}
 
 /**
  * Parses IP range from command line argument input.

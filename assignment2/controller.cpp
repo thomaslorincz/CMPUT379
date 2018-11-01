@@ -153,6 +153,8 @@ void ControllerLoop(int num_switches) {
           write(fd, ack_message.c_str(), strlen(ack_message.c_str()));
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
+
+          ack_count++;
         } else if (received_packet.type == QUERY) {
           query_count++;
           // TODO: Reply with an ADD packet (message is the flow table rule)
@@ -161,6 +163,8 @@ void ControllerLoop(int num_switches) {
           write(id_to_fd[i], add_message.c_str(), strlen(add_message.c_str()));
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
+
+          add_count++;
         } else {
           printf("Received %s packet. Ignored.\n",
                  to_string(received_packet.type).c_str());

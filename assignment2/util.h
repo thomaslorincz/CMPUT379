@@ -18,6 +18,8 @@ string PacketToString(Packet &p);
 
 Packet ParsePacketString(string &s);
 
+int ParseSwitchId(const string &input);
+
 void Trim(string &s);
 
 #endif

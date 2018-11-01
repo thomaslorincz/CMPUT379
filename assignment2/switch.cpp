@@ -6,6 +6,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fstream>
+#include <iterator>
+#include <sstream>
 #include <tuple>
 #include <vector>
 #include "util.h"
@@ -33,16 +35,51 @@ typedef struct {
   string fifo;
 } connection;
 
+tuple<int, int, int> ParseTrafficFileLine(string &line) {
+  int id;
+  int ip_low;
+  int ip_high;
+
+  istringstream iss(line);
+  vector<string> tokens{istream_iterator<string>{iss},
+                        istream_iterator<string>{}};
+  if (tokens[0] == "#") {
+    return make_tuple(-1, -1, -1);
+  } else {
+    id = ParseSwitchId(tokens[0]);  // TODO: Different error handling?
+
+    ip_low = (int)strtol(tokens[1].c_str(), (char **)NULL, 10);
+    if (ip_low < 0 || ip_low > MAXIP || errno) {
+      printf("Error: Invalid IP lower bound.\n");
+      errno = 0;
+      return make_tuple(-1, -1, -1);
+    }
+
+    ip_high = (int)strtol(tokens[2].c_str(), (char **)NULL, 10);
+    if (ip_high < 0 || ip_high > MAXIP || errno) {
+      printf("Error: Invalid IP lower bound.\n");
+      errno = 0;
+      return make_tuple(-1, -1, -1);
+    }
+  }
+
+  for (auto &token : tokens) {
+    printf("%s ", token.c_str());
+  }
+  printf("\n");
+
+  return make_tuple(id, ip_low, ip_high);
+}
+
 void SwitchList(vector<flow_rule> flow_table, int admit, int ack, int addRule,
                 int relayIn, int open, int query, int relayOut) {
   printf("Flow table:\n");
   int i = 0;
   for (auto &rule : flow_table) {
-    printf(
-        "[%i] (srcIp= %i=%i, destIp= %i-%i, action= %s:%i, pri= %i, pktCount= "
-        "%i)\n",
-        i, rule.srcIP_lo, rule.srcIP_hi, rule.destIP_lo, rule.destIP_hi,
-        rule.actionType.c_str(), rule.actionVal, rule.pri, rule.pktCount);
+    printf("[%i] (srcIp= %i=%i, destIp= %i-%i, ", i, rule.srcIP_lo,
+           rule.srcIP_hi, rule.destIP_lo, rule.destIP_hi);
+    printf("action= %s:%i, pri= %i, pktCount= %i)\n", rule.actionType.c_str(),
+           rule.actionVal, rule.pri, rule.pktCount);
     i++;
   }
   printf("\n");
@@ -64,13 +101,13 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   receivers = (port_1_id != -1) ? receivers + 1 : receivers;
   receivers = (port_2_id != -1) ? receivers + 1 : receivers;
 
-  int admitCount = 0;
-  int ackCount = 0;
-  int addRuleCount = 0;
-  int relayInCount = 0;
-  int openCount = 0;
-  int queryCount = 0;
-  int relayOutCount = 0;
+  int admit_count = 0;
+  int ack_count = 0;
+  int add_rule_count = 0;
+  int relay_in_count = 0;
+  int open_count = 0;
+  int query_count = 0;
+  int relay_out_count = 0;
 
   vector<connection> send_connections;
 
@@ -83,7 +120,7 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   string read_fifo_name = MakeFifoName(CONTROLLER_ID, id);
 
   mkfifo(read_fifo_name.c_str(),
-          S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+         S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
   if (errno) perror("Error: Could not create a FIFO connection.\n");
   errno = 0;
 
@@ -113,12 +150,86 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   write(write_fd, open_message.c_str(), strlen(open_message.c_str()));
   if (errno) perror("Error: Failed to write.\n");
   errno = 0;
+  open_count++;
+
+  // TODO: Refactor/simplify
+  if (port_1_id != -1) {
+    string port_1_fifo = MakeFifoName(port_1_id, id);
+
+    mkfifo(port_1_fifo.c_str(),
+           S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    if (errno) perror("Error: Could not create a FIFO connection.\n");
+    errno = 0;
+
+    // Returns lowest unused file descriptor on success
+    int port_1_fd = open(port_1_fifo.c_str(), O_RDONLY | O_NONBLOCK);
+    if (errno) perror("Error: Could not open FIFO.\n");
+    errno = 0;
+
+    printf("Created %s fd = %i\n", port_1_fifo.c_str(), port_1_fd);
+
+    pfds[2].fd = port_1_fd;
+    pfds[2].events = POLLIN;
+    pfds[2].revents = 0;
+  }
+
+  // TODO: Refactor/simplify
+  if (port_2_id != -1) {
+    string port_2_fifo = MakeFifoName(port_2_id, id);
+
+    mkfifo(port_2_fifo.c_str(),
+           S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    if (errno) perror("Error: Could not create a FIFO connection.\n");
+    errno = 0;
+
+    // Returns lowest unused file descriptor on success
+    int port_2_fd = open(port_2_fifo.c_str(), O_RDONLY | O_NONBLOCK);
+    if (errno) perror("Error: Could not open FIFO.\n");
+    errno = 0;
+
+    printf("Created %s fd = %i\n", port_2_fifo.c_str(), port_2_fd);
+
+    pfds[3].fd = port_2_fd;
+    pfds[3].events = POLLIN;
+    pfds[3].revents = 0;
+  }
 
   while (true) {
+    /**
+     * 1. Read and process a single line from the traffic line (if the EOF has
+     * not been reached yet). The switch ignores empty lines, comment lines, and
+     * lines specifying other handling switches. A packet header is considered
+     * admitted if the line specifies the current switch.
+     */
+    tuple<int, int, int> traffic_info;
+    string line;
+    if (in.is_open()) {
+      if (getline(in, line)) {
+        traffic_info = ParseTrafficFileLine(line);
+
+        if (get<0>(traffic_info) == -1 && get<1>(traffic_info) == -1 &&
+            get<2>(traffic_info) == -1) {
+          // Ignore
+        } else {
+          // Check flow table
+          printf("GOT HERE\n");
+        }
+      } else {
+        in.close();
+      }
+    }
+
     poll(pfds, receivers + 1, 0);
     if (errno) perror("Error: poll() failure.\n");
     errno = 0;
 
+    /*
+     * 2. Poll the keyboard for a user command. The user can issue one of the
+     * following commands. list: The program writes all entries in the flow
+     * table, and for each transmitted or received packet type, the program
+     * writes an aggregate count of handled packets of this type. exit: The
+     * program writes the above information and exits.
+     */
     if (pfds[0].revents & POLLIN) {
       ssize_t r = read(pfds[0].fd, buffer, MAX_BUFFER);
       if (!r) printf("Warning: stdin closed.\n");
@@ -127,11 +238,11 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
       Trim(cmd);  // Trim whitespace
 
       if (cmd == "list") {
-        SwitchList(flow_table, admitCount, ackCount, addRuleCount, relayInCount,
-                   openCount, queryCount, relayOutCount);
+        SwitchList(flow_table, admit_count, ack_count, add_rule_count,
+                   relay_in_count, open_count, query_count, relay_out_count);
       } else if (cmd == "exit") {
-        SwitchList(flow_table, admitCount, ackCount, addRuleCount, relayInCount,
-                   openCount, queryCount, relayOutCount);
+        SwitchList(flow_table, admit_count, ack_count, add_rule_count,
+                   relay_in_count, open_count, query_count, relay_out_count);
         exit(0);
       } else {
         printf("Error: Unrecognized command. Please use list or exit.\n");
@@ -155,14 +266,14 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
         printf("Received packet: %s\n", buffer);
 
         if (received_packet.type == ACK) {
-          ackCount++;
+          ack_count++;
         } else if (received_packet.type == ADD) {
-          // Ignore for now
+          add_rule_count++
         } else if (received_packet.type == RELAY) {
-          // Ignore for now
+          relay_in_count++;
         } else {
           printf("Received %s packet. Ignored.\n",
-                  to_string(received_packet.type).c_str());
+                 to_string(received_packet.type).c_str());
         }
       }
     }
