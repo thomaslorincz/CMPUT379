@@ -1,31 +1,43 @@
 #include <algorithm>
+#include <sstream>
 #include <string>
+#include <vector>
 
 using namespace std;
 
-typedef enum { OPEN, ACK, QUERY, ADD, RELAY } PACKET_TYPE;
-
 typedef struct {
-  PACKET_TYPE type;
+  string type;
   string message;
 } Packet;
+
+vector<int> ParsePacketMessage(string &m) {
+  vector<int> vect;
+  stringstream ss(m);
+
+  // Split packet string into ints (comma delimited)
+  int i = 0;
+  while (ss >> i) {
+    vect.push_back(i);
+    if (ss.peek() == ',') ss.ignore();
+  }
+
+  return vect;
+}
 
 string MakeFifoName(int sender_id, int receiver_id) {
   return "fifo-" + to_string(sender_id) + "-" + to_string(receiver_id);
 }
 
 string PacketToString(Packet &p) {
-  return to_string(p.type) + ":" + p.message;
+  return p.type + ":" + p.message;
 }
 
 Packet ParsePacketString(string &s) {
-  string packet_type_token = s.substr(0, s.find(":"));
-  PACKET_TYPE type =
-      (PACKET_TYPE)strtol(packet_type_token.c_str(), (char **)NULL, 10);
+  string packet_type = s.substr(0, s.find(":"));
 
   string packet_message_token = s.substr(s.find(":") + 1);
 
-  return {type, packet_message_token};
+  return {packet_type, packet_message_token};
 }
 
 /**

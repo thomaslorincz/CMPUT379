@@ -2,15 +2,16 @@
 #define UTIL_H_
 
 #include <string>
+#include <vector>
 
 using namespace std;
 
-typedef enum { OPEN, ACK, QUERY, ADD, RELAY } PACKET_TYPE;
-
 typedef struct {
-  PACKET_TYPE type;
+  string type;
   string message;
 } Packet;
+
+vector<int> ParsePacketMessage(string &m);
 
 string MakeFifoName(int sender_id, int receiver_id);
 

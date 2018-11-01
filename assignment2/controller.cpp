@@ -13,6 +13,7 @@
 
 #define CONTROLLER_ID 0
 #define MAX_BUFFER 1024
+#define MAXIP 1000
 
 using namespace std;
 
@@ -24,6 +25,17 @@ typedef struct {
   int ipHigh;
 } SwitchInfo;
 
+// TODO: Use new util ParsePacketMessage
+int ParseQueryMessage(string &m) {
+  int query_ip = (int)strtol(m.c_str(), (char **)NULL, 10);
+  if (query_ip > MAXIP || query_ip < 0 || errno) {
+    printf("Error: Invalid IP for QUERY. Dropping.\n");
+    return -1;
+  }
+  return query_ip;
+}
+
+// TODO: Use new util ParsePacketMessage
 SwitchInfo ParseOpenMessage(string &m) {
   vector<int> vect;
   stringstream ss(m);
@@ -135,7 +147,7 @@ void ControllerLoop(int num_switches) {
 
         printf("Received packet: %s\n", buffer);
 
-        if (received_packet.type == OPEN) {
+        if (received_packet.type == "OPEN") {
           open_count++;
 
           SwitchInfo new_info = ParseOpenMessage(received_packet.message);
@@ -148,26 +160,50 @@ void ControllerLoop(int num_switches) {
           errno = 0;
           id_to_fd.insert({i, fd});
 
-          string ack_message = to_string(ACK) + ":";
+          string ack_message = "ACK:";
 
           write(fd, ack_message.c_str(), strlen(ack_message.c_str()));
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
 
           ack_count++;
-        } else if (received_packet.type == QUERY) {
+        } else if (received_packet.type == "QUERY") {
           query_count++;
-          // TODO: Reply with an ADD packet (message is the flow table rule)
-          string add_message = to_string(ADD) + ":";
 
-          write(id_to_fd[i], add_message.c_str(), strlen(add_message.c_str()));
-          if (errno) perror("Error: Could not write.\n");
-          errno = 0;
+          int query_ip = ParseQueryMessage(received_packet.message);
+          if (query_ip == -1) continue;
+
+          bool found = false;
+          for (auto &info : switch_info_table) {
+            if (query_ip >= info.ipLow && query_ip <= info.ipHigh) {
+              int add_id = info.id;
+
+              string add_message = "ADD:1," + to_string(info.ipLow) + "," +
+                                   to_string(info.ipHigh) + "," +
+                                   to_string(add_id);
+
+              write(id_to_fd[i], add_message.c_str(),
+                    strlen(add_message.c_str()));
+              if (errno) perror("Error: Could not write.\n");
+              errno = 0;
+
+              found = true;
+              break;
+            }
+          }
+
+          if (!found) {
+            string add_message = "ADD:0," + to_string(query_ip) + "," + to_string(query_ip);
+            write(id_to_fd[i], add_message.c_str(),
+                  strlen(add_message.c_str()));
+            if (errno) perror("Error: Could not write.\n");
+            errno = 0;
+          }
 
           add_count++;
         } else {
           printf("Received %s packet. Ignored.\n",
-                 to_string(received_packet.type).c_str());
+                 received_packet.type.c_str());
         }
       }
     }
