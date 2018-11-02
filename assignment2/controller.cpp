@@ -136,7 +136,7 @@ void ControllerLoop(int num_switches) {
 
           // Returns lowest unused file descriptor on success
           string fifo_name = MakeFifoName(CONTROLLER_ID, i);
-          int fd = open(fifo_name.c_str(), O_WRONLY);
+          int fd = open(fifo_name.c_str(), O_WRONLY | O_NONBLOCK);
           if (errno) perror("Error: Could not open FIFO.\n");
           errno = 0;
           id_to_fd.insert({i, fd});
@@ -160,11 +160,17 @@ void ControllerLoop(int num_switches) {
           bool found = false;
           for (auto &info : switch_info_table) {
             if (query_ip >= info.ipLow && query_ip <= info.ipHigh) {
-              int add_id = info.id;
+              int relay_id = 0;
+
+              if (info.id > i) {
+                relay_id = 2;
+              } else {
+                relay_id = 1;
+              }
 
               string add_message = "ADD:1," + to_string(info.ipLow) + "," +
                                    to_string(info.ipHigh) + "," +
-                                   to_string(add_id);
+                                   to_string(relay_id);
 
               write(id_to_fd[i], add_message.c_str(),
                     strlen(add_message.c_str()));

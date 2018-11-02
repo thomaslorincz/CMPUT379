@@ -10,6 +10,7 @@
 #include <map>
 #include <sstream>
 #include <tuple>
+#include <utility>
 #include <vector>
 #include "util.h"
 
@@ -36,6 +37,17 @@ typedef struct {
   string fifo;
 } connection;
 
+
+
+int OpenFifo(int src, int dest, int flag, string &fifo_name) {
+  // Returns lowest unused file descriptor on success
+  int fd = open(fifo_name.c_str(), flag);
+  if (errno) perror("Error: Could not open FIFO.\n");
+  errno = 0;
+
+  return fd;
+}
+
 int CreateFifo(int src, int dest, int flag) {
   string fifo_name = MakeFifoName(src, dest);
 
@@ -44,10 +56,7 @@ int CreateFifo(int src, int dest, int flag) {
   if (errno) perror("Error: Could not create a FIFO connection.\n");
   errno = 0;
 
-  // Returns lowest unused file descriptor on success
-  int fd = open(fifo_name.c_str(), flag);
-  if (errno) perror("Error: Could not open FIFO.\n");
-  errno = 0;
+  int fd = OpenFifo(src, dest, flag, fifo_name);
 
   printf("Created %s fd = %i\n", fifo_name.c_str(), fd);
 
@@ -55,9 +64,9 @@ int CreateFifo(int src, int dest, int flag) {
 }
 
 tuple<int, int, int> ParseTrafficFileLine(string &line) {
-  int id;
-  int src_ip;
-  int dest_ip;
+  int id = 0;
+  int src_ip = 0;
+  int dest_ip = 0;
 
   istringstream iss(line);
   vector<string> tokens{istream_iterator<string>{iss},
@@ -65,7 +74,7 @@ tuple<int, int, int> ParseTrafficFileLine(string &line) {
   if (tokens[0] == "#") {
     return make_tuple(-1, -1, -1);
   } else {
-    id = ParseSwitchId(tokens[0]);  // TODO: Different error handling?
+    id = ParseSwitchId(tokens[0]);
 
     src_ip = (int)strtol(tokens[1].c_str(), (char **)NULL, 10);
     if (src_ip < 0 || src_ip > MAXIP || errno) {
@@ -116,6 +125,7 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
       0, MAXIP, get<0>(ip_range), get<1>(ip_range), "FORWARD", 3, MINPRI, 0};
   flow_table.push_back(initial_rule);
 
+  int pfd_index = 0;
   int receivers = 1;
   receivers = (port_1_id != -1) ? receivers + 1 : receivers;
   receivers = (port_2_id != -1) ? receivers + 1 : receivers;
@@ -128,23 +138,26 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   int query_count = 0;
   int relay_out_count = 0;
 
-  map<int, connection> send_connections;
+  map<int, int> port_to_fd;
+  map<int, int> port_to_id;
 
   char buffer[MAX_BUFFER];
   struct pollfd pfds[receivers + 1];
-  pfds[0].fd = STDIN_FILENO;
-  pfds[0].events = POLLIN;
-  pfds[0].revents = 0;
+  pfds[pfd_index].fd = STDIN_FILENO;
+  pfds[pfd_index].events = POLLIN;
+  pfds[pfd_index].revents = 0;
+  pfd_index++;
 
-  // TODO: Error handling
   int fd1 = CreateFifo(CONTROLLER_ID, id, O_RDONLY | O_NONBLOCK);
-  pfds[1].fd = fd1;
-  pfds[1].events = POLLIN;
-  pfds[1].revents = 0;
+  pfds[pfd_index].fd = fd1;
+  pfds[pfd_index].events = POLLIN;
+  pfds[pfd_index].revents = 0;
+  pfd_index++;
 
-  int fd2 = CreateFifo(id, CONTROLLER_ID, O_WRONLY);
-  send_connections.insert(pair<int, connection>(
-      CONTROLLER_ID, {fd2, MakeFifoName(id, CONTROLLER_ID)}));
+  string write_fifo_name = MakeFifoName(id, CONTROLLER_ID);
+  int fd2 = OpenFifo(id, CONTROLLER_ID, O_WRONLY | O_NONBLOCK, write_fifo_name);
+  pair<int, int> cont_conn = make_pair(CONTROLLER_ID, fd2);
+  port_to_fd.insert(cont_conn);
 
   // Send an OPEN packet to the controller
   string open_message = "OPEN:" + to_string(id) + "," + to_string(port_1_id) +
@@ -157,17 +170,23 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
   open_count++;
 
   if (port_1_id != -1) {
+    pair<int, int> port_1_conn = make_pair(1, port_1_id);
+    port_to_id.insert(port_1_conn);
     int port_1_fd = CreateFifo(port_1_id, id, O_RDONLY | O_NONBLOCK);
-    pfds[2].fd = port_1_fd;
-    pfds[2].events = POLLIN;
-    pfds[2].revents = 0;
+    pfds[pfd_index].fd = port_1_fd;
+    pfds[pfd_index].events = POLLIN;
+    pfds[pfd_index].revents = 0;
+    pfd_index++;
   }
 
   if (port_2_id != -1) {
+    pair<int, int> port_2_conn = make_pair(2, port_2_id);
+    port_to_id.insert(port_2_conn);
     int port_2_fd = CreateFifo(port_2_id, id, O_RDONLY | O_NONBLOCK);
-    pfds[3].fd = port_2_fd;
-    pfds[3].events = POLLIN;
-    pfds[3].revents = 0;
+    pfds[pfd_index].fd = port_2_fd;
+    pfds[pfd_index].events = POLLIN;
+    pfds[pfd_index].revents = 0;
+    pfd_index++;
   }
 
   while (true) {
@@ -194,16 +213,25 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
           admit_count++;
           bool found = false;
           for (auto &rule : flow_table) {
-            if (src_ip >= rule.srcIP_lo && src_ip <= rule.srcIP_hi &&
-                dest_ip >= rule.destIP_lo && dest_ip <= rule.destIP_hi) {
+            if (dest_ip >= rule.destIP_lo && dest_ip <= rule.destIP_hi) {
               rule.pktCount++;
               if (rule.actionType == "DROP") {
-                // Drop
+                break;
               } else if (rule.actionType == "FORWARD") {
                 if (rule.actionVal != 3) {
-                  int relay_fd = send_connections[rule.actionVal].fd;
-                  string relay_string = "RELAY:";
-                  write(relay_fd, relay_string.c_str(),
+                  string relay_string = "RELAY:" + to_string(dest_ip);
+
+                  if (!port_to_fd.count(rule.actionVal)) {
+                    string relay_fifo = MakeFifoName(id, rule.actionVal);
+                    int port_fd = OpenFifo(id, port_to_id[rule.actionVal],
+                                           O_WRONLY | O_NONBLOCK, relay_fifo);
+
+                    pair<int, int> port_conn =
+                        make_pair(port_to_id[rule.actionVal], port_fd);
+                    port_to_fd.insert(port_conn);
+                  }
+
+                  write(port_to_fd[rule.actionVal], relay_string.c_str(),
                         strlen(relay_string.c_str()));
                   if (errno) perror("Error: Failed to write.\n");
                   errno = 0;
@@ -217,7 +245,7 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
           }
 
           if (!found) {
-            int query_fd = send_connections[CONTROLLER_ID].fd;
+            int query_fd = port_to_fd[CONTROLLER_ID];
             string query_string = "QUERY:" + to_string(dest_ip);
             write(query_fd, query_string.c_str(), strlen(query_string.c_str()));
             if (errno) perror("Error: Failed to write.\n");
@@ -230,8 +258,7 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
       }
     }
 
-    // Slight delay to wait for ADD
-    poll(pfds, receivers + 1, 20);
+    poll(pfds, receivers + 1, 0);
     if (errno) perror("Error: poll() failure.\n");
     errno = 0;
 
@@ -244,7 +271,9 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
      */
     if (pfds[0].revents & POLLIN) {
       ssize_t r = read(pfds[0].fd, buffer, MAX_BUFFER);
-      if (!r) printf("Warning: stdin closed.\n");
+      if (!r) {
+        printf("Warning: stdin closed.\n");
+      }
 
       string cmd = string(buffer);
       Trim(cmd);  // Trim whitespace
@@ -267,8 +296,8 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
      * section.
      */
     for (int i = 1; i <= receivers; i++) {
-      if (pfds[1].revents & POLLIN) {
-        ssize_t r = read(pfds[1].fd, buffer, MAX_BUFFER);
+      if (pfds[i].revents & POLLIN) {
+        ssize_t r = read(pfds[i].fd, buffer, MAX_BUFFER);
         if (!r) {
           printf("Warning: Connection closed.\n");
         }
@@ -286,9 +315,37 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
           flow_rule new_rule;
           string new_action;
           if (packet_message[0] == 0) {
-            new_rule = {0, MAXIP, packet_message[1], packet_message[2], "DROP", 0, MINPRI, 1};
+            new_rule = {0,
+                        MAXIP, 
+                        packet_message[1], 
+                        packet_message[2], 
+                        "DROP", 
+                        0,
+                        MINPRI,
+                        1};
           } else if (packet_message[0] == 1) {
-            new_rule = {0, MAXIP, packet_message[1], packet_message[2], "FORWARD", packet_message[3], MINPRI, 1};
+            new_rule = {0,
+                        MAXIP,
+                        packet_message[1],
+                        packet_message[2],
+                        "FORWARD",
+                        packet_message[3],
+                        MINPRI,
+                        1};
+            string relay_string = "RELAY:" + to_string(packet_message[1]);
+
+            if (!port_to_fd.count(packet_message[3])) {
+              string relay_fifo = MakeFifoName(id, packet_message[3]);
+              int port_fd = OpenFifo(id, port_to_id[packet_message[3]],
+                                     O_WRONLY | O_NONBLOCK, relay_fifo);
+
+              pair<int, int> port_conn =
+                  make_pair(port_to_id[packet_message[3]], port_fd);
+              port_to_fd.insert(port_conn);
+            }
+
+            write(port_to_fd[packet_message[3]], relay_string.c_str(),
+                  strlen(relay_string.c_str()));
           } else {
             printf("Error: Invalid rule to add.\n");
             continue;
@@ -298,6 +355,48 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
           add_rule_count++;
         } else if (packet_type == "RELAY") {
           relay_in_count++;
+
+          bool found = false;
+          for (auto &rule : flow_table) {
+            if (packet_message[0] >= rule.destIP_lo && packet_message[0] <= rule.destIP_hi) {
+              rule.pktCount++;
+              if (rule.actionType == "DROP") {
+                break;
+              } else if (rule.actionType == "FORWARD") {
+                if (rule.actionVal != 3) {
+                  string relay_string = "RELAY:" + to_string(packet_message[0]);
+
+                  if (!port_to_fd.count(rule.actionVal)) {
+                    string relay_fifo = MakeFifoName(id, rule.actionVal);
+                    int port_fd = OpenFifo(id, port_to_id[rule.actionVal],
+                                           O_WRONLY | O_NONBLOCK, relay_fifo);
+
+                    pair<int, int> port_conn =
+                        make_pair(port_to_id[rule.actionVal], port_fd);
+                    port_to_fd.insert(port_conn);
+                  }
+
+                  write(port_to_fd[rule.actionVal], relay_string.c_str(),
+                        strlen(relay_string.c_str()));
+                  if (errno) perror("Error: Failed to write.\n");
+                  errno = 0;
+                  relay_out_count++;
+                }
+              }
+
+              found = true;
+              break;
+            }
+          }
+
+          if (!found) {
+            int query_fd = port_to_fd[CONTROLLER_ID];
+            string query_string = "QUERY:" + to_string(packet_message[0]);
+            write(query_fd, query_string.c_str(), strlen(query_string.c_str()));
+            if (errno) perror("Error: Failed to write.\n");
+            errno = 0;
+            query_count++;
+          }
         } else {
           printf("Received %s packet. Ignored.\n", packet_type.c_str());
         }
