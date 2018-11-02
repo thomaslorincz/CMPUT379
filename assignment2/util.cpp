@@ -6,6 +6,9 @@
 
 using namespace std;
 
+/**
+ * Parses the message portion of a packet
+ */
 vector<int> ParsePacketMessage(string &m) {
   vector<int> vect;
   stringstream ss(m);
@@ -20,10 +23,16 @@ vector<int> ParsePacketMessage(string &m) {
   return vect;
 }
 
+/**
+ * Returns FIFO name based on sender and reciever IDs
+ */
 string MakeFifoName(int sender_id, int receiver_id) {
   return "fifo-" + to_string(sender_id) + "-" + to_string(receiver_id);
 }
 
+/**
+ * Parse a packet string. Return the packet type and its message info.
+ */
 pair<string, vector<int>> ParsePacketString(string &s) {
   string packet_type = s.substr(0, s.find(":"));
 

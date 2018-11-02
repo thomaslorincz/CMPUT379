@@ -7,7 +7,7 @@
 # ------------------------------------------------------------
 
 target = submit
-allFiles = Makefile a2sdn.cpp controller.cpp controller.h switch.cpp switch.h util.cpp util.h
+allFiles = Makefile a2sdn.cpp controller.cpp controller.h switch.cpp switch.h util.cpp util.h report.pdf
 
 compile:
 	g++ -std=c++11 -Wall a2sdn.cpp controller.cpp controller.h switch.cpp switch.h util.cpp util.h -o a2sdn

@@ -47,6 +47,9 @@ int open_count = 0;
 int query_count = 0;
 int relay_out_count = 0;
 
+/**
+ * Opens a FIFO for reading or writing.
+ */
 int OpenFifo(int src, int dest, int flag, string &fifo_name) {
   // Returns lowest unused file descriptor on success
   int fd = open(fifo_name.c_str(), flag);
@@ -56,6 +59,9 @@ int OpenFifo(int src, int dest, int flag, string &fifo_name) {
   return fd;
 }
 
+/**
+ * Creates and opens a FIFO for reading or writing.
+ */
 int CreateFifo(int src, int dest, int flag) {
   string fifo_name = MakeFifoName(src, dest);
 
@@ -71,6 +77,10 @@ int CreateFifo(int src, int dest, int flag) {
   return fd;
 }
 
+/**
+ * Handles an incoming packet. Based on its contents,
+ * the packet will either be ignored, dropped, or forwarded.
+ */
 void HandlePacketUsingFlowTable(int switch_id, int dest_ip) {
   bool found = false;
   for (auto &rule : flow_table) {
@@ -82,6 +92,7 @@ void HandlePacketUsingFlowTable(int switch_id, int dest_ip) {
         if (rule.actionVal != 3) {
           string relay_string = "RELAY:" + to_string(dest_ip);
 
+          // Open the FIFO for writing if not done already
           if (!port_to_fd.count(rule.actionVal)) {
             string relay_fifo = MakeFifoName(switch_id, rule.actionVal);
             int port_fd = OpenFifo(switch_id, port_to_id[rule.actionVal],

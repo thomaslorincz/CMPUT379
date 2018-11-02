@@ -28,15 +28,22 @@ typedef struct {
   int ipHigh;
 } SwitchInfo;
 
+// Table containing info about opened switches
 vector<SwitchInfo> switch_info_table;
+
+// Global count of packets seen
 int cont_open_count = 0;
 int cont_query_count = 0;
 int cont_ack_count = 0;
 int cont_add_count = 0;
 
 // Mapping switch IDs to FDs
-map<int, int> id_to_fd;  
+map<int, int> id_to_fd;
 
+/**
+ * List the controller specs including switches known and
+ * packets seen.
+ */
 void ControllerList() {
   printf("Switch information:\n");
   for (auto &info : switch_info_table) {
@@ -45,10 +52,14 @@ void ControllerList() {
   }
   printf("\n");
   printf("Packet stats:\n");
-  printf("\tReceived:    OPEN:%i, QUERY:%i\n", cont_open_count, cont_query_count);
+  printf("\tReceived:    OPEN:%i, QUERY:%i\n", cont_open_count,
+         cont_query_count);
   printf("\tTransmitted: ACK:%i, ADD:%i\n", cont_ack_count, cont_add_count);
 }
 
+/**
+ * Main controller event loop. Communicates with switches via FIFOs.
+ */
 void ControllerLoop(int num_switches) {
   struct pollfd pfds[num_switches + 2];
   pfds[0].fd = STDIN_FILENO;
@@ -56,6 +67,7 @@ void ControllerLoop(int num_switches) {
   pfds[0].revents = 0;
   char buffer[MAX_BUFFER];
 
+  // Create and open read FIFOS for all attached switches
   for (int i = 1; i <= num_switches; i++) {
     string fifo_name = MakeFifoName(i, CONTROLLER_ID);
     mkfifo(fifo_name.c_str(),
@@ -81,8 +93,8 @@ void ControllerLoop(int num_switches) {
   // Must block the signals in order for signalfd to receive them
   sigprocmask(SIG_BLOCK, &sigset, nullptr);
   if (errno) {
-      perror("Error: Could not set signal mask.\n");
-      exit(errno);
+    perror("Error: Could not set signal mask.\n");
+    exit(errno);
   }
 
   pfds[num_switches + 1].fd = signalfd(-1, &sigset, 0);
@@ -171,17 +183,21 @@ void ControllerLoop(int num_switches) {
             continue;
           }
 
+          // Check for information in the switch info table
           bool found = false;
           for (auto &info : switch_info_table) {
             if (query_ip >= info.ipLow && query_ip <= info.ipHigh) {
               int relay_id = 0;
 
+              // Determine relay port
+              // NOTE: Assumes ports are ordered
               if (info.id > i) {
                 relay_id = 2;
               } else {
                 relay_id = 1;
               }
 
+              // Send new rule
               string add_message = "ADD:1," + to_string(info.ipLow) + "," +
                                    to_string(info.ipHigh) + "," +
                                    to_string(relay_id);
@@ -196,6 +212,7 @@ void ControllerLoop(int num_switches) {
             }
           }
 
+          // If nothing is found in the info table, tell the switch to drop
           if (!found) {
             string add_message =
                 "ADD:0," + to_string(query_ip) + "," + to_string(query_ip);
@@ -213,18 +230,19 @@ void ControllerLoop(int num_switches) {
     }
 
     /*
-     * In addition, upon receiving signal USER1, the switch displays the information specified by the list command.
+     * In addition, upon receiving signal USER1, the switch displays the
+     * information specified by the list command.
      */
     if (pfds[num_switches + 1].revents & POLLIN) {
-        struct signalfd_siginfo info{};
-        ssize_t r = read(pfds[num_switches + 2].fd, &info, sizeof(info));
-        if (!r) {
-            printf("Warning: Signal reading error.\n");
-        }
-        unsigned sig = info.ssi_signo;
-        if (sig == SIGUSR1) {
-            ControllerList();
-        }
+      struct signalfd_siginfo info {};
+      ssize_t r = read(pfds[num_switches + 2].fd, &info, sizeof(info));
+      if (!r) {
+        printf("Warning: Signal reading error.\n");
+      }
+      unsigned sig = info.ssi_signo;
+      if (sig == SIGUSR1) {
+        ControllerList();
+      }
     }
 
     memset(buffer, 0, sizeof(buffer));  // Clear buffer
