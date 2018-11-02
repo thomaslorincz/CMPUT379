@@ -8,6 +8,9 @@ using namespace std;
 
 /**
  * Parses the message portion of a packet
+ * Attribution:
+ * https://stackoverflow.com/questions/1894886/parsing-a-comma-delimited-stdstring
+ * https://stackoverflow.com/a/1894955
  */
 vector<int> ParsePacketMessage(string &m) {
   vector<int> vect;
@@ -60,6 +63,13 @@ int ParseSwitchId(const string &input) {
     return switch_id;
   }
 }
+
+/**
+ * String trimming functions found here:
+ * https://stackoverflow.com/questions/216823/whats-the-best-way-to-trim-stdstring
+ * https://stackoverflow.com/a/217605 
+ * By: https://stackoverflow.com/users/13430/evan-teran
+ */
 
 // Trim from start (in place)
 void LeftTrim(string &s) {

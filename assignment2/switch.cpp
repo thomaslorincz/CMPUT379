@@ -128,6 +128,9 @@ void HandlePacketUsingFlowTable(int switch_id, int dest_ip) {
 
 /**
  * Parses a line in the traffic file.
+ * Attribution:
+ * https://stackoverflow.com/questions/236129/how-do-i-iterate-over-the-words-of-a-string
+ * https://stackoverflow.com/a/237280
  */
 tuple<int, int, int> ParseTrafficFileLine(string &line) {
   int id = 0;
@@ -387,6 +390,9 @@ void SwitchLoop(int id, int port_1_id, int port_2_id, tuple<int, int> ip_range,
 
             write(port_to_fd[packet_message[3]], relay_string.c_str(),
                   strlen(relay_string.c_str()));
+            if (errno) perror("Error: Failed to write.\n");
+            errno = 0;
+            relay_out_count++;
           } else {
             printf("Error: Invalid rule to add.\n");
             continue;
