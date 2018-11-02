@@ -1,7 +1,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -26,8 +28,16 @@ typedef struct {
   int ipHigh;
 } SwitchInfo;
 
-void ControllerList(vector<SwitchInfo> switch_info_table, int open, int query,
-                    int ack, int add) {
+vector<SwitchInfo> switch_info_table;
+int cont_open_count = 0;
+int cont_query_count = 0;
+int cont_ack_count = 0;
+int cont_add_count = 0;
+
+// Mapping switch IDs to FDs
+map<int, int> id_to_fd;  
+
+void ControllerList() {
   printf("Switch information:\n");
   for (auto &info : switch_info_table) {
     printf("[sw%i]: port1= %i, port2= %i, port3= %i-%i\n", info.id,
@@ -35,20 +45,12 @@ void ControllerList(vector<SwitchInfo> switch_info_table, int open, int query,
   }
   printf("\n");
   printf("Packet stats:\n");
-  printf("\tReceived:    OPEN:%i, QUERY:%i\n", open, query);
-  printf("\tTransmitted: ACK:%i, ADD:%i\n", ack, add);
+  printf("\tReceived:    OPEN:%i, QUERY:%i\n", cont_open_count, cont_query_count);
+  printf("\tTransmitted: ACK:%i, ADD:%i\n", cont_ack_count, cont_add_count);
 }
 
 void ControllerLoop(int num_switches) {
-  vector<SwitchInfo> switch_info_table;
-  int open_count = 0;
-  int query_count = 0;
-  int ack_count = 0;
-  int add_count = 0;
-
-  map<int, int> id_to_fd;  // Mapping switch IDs to FDs
-
-  struct pollfd pfds[num_switches + 1];
+  struct pollfd pfds[num_switches + 2];
   pfds[0].fd = STDIN_FILENO;
   pfds[0].events = POLLIN;
   pfds[0].revents = 0;
@@ -73,6 +75,20 @@ void ControllerLoop(int num_switches) {
     pfds[i].revents = 0;
   }
 
+  sigset_t sigset;
+  sigemptyset(&sigset);
+  sigaddset(&sigset, SIGUSR1);
+  // Must block the signals in order for signalfd to receive them
+  sigprocmask(SIG_BLOCK, &sigset, nullptr);
+  if (errno) {
+      perror("Error: Could not set signal mask.\n");
+      exit(errno);
+  }
+
+  pfds[num_switches + 1].fd = signalfd(-1, &sigset, 0);
+  pfds[num_switches + 1].events = POLLIN;
+  pfds[num_switches + 1].revents = 0;
+
   while (true) {
     /*
      * 1. Poll the keyboard for a user command. The user can issue one of the
@@ -81,7 +97,7 @@ void ControllerLoop(int num_switches) {
      * writes an aggregate count of handled packets of this type. exit: The
      * program writes the above information and exits.
      */
-    poll(pfds, num_switches + 1, 0);  // Poll from all file descriptors
+    poll(pfds, num_switches + 2, 0);  // Poll from all file descriptors
     if (errno) perror("Error: poll() failure.\n");
     errno = 0;
 
@@ -93,11 +109,9 @@ void ControllerLoop(int num_switches) {
       Trim(cmd);  // Trim whitespace
 
       if (cmd == "list") {
-        ControllerList(switch_info_table, open_count, query_count, ack_count,
-                       add_count);
+        ControllerList();
       } else if (cmd == "exit") {
-        ControllerList(switch_info_table, open_count, query_count, ack_count,
-                       add_count);
+        ControllerList();
         exit(0);
       } else {
         printf("Error: Unrecognized command. Please use list or exit.\n");
@@ -123,7 +137,7 @@ void ControllerLoop(int num_switches) {
         printf("Received packet: %s\n", buffer);
 
         if (packet_type == "OPEN") {
-          open_count++;
+          cont_open_count++;
 
           if (packet_message.size() < 5) {
             printf("Error: Invalid OPEN packet.\n");
@@ -147,9 +161,9 @@ void ControllerLoop(int num_switches) {
           if (errno) perror("Error: Could not write.\n");
           errno = 0;
 
-          ack_count++;
+          cont_ack_count++;
         } else if (packet_type == "QUERY") {
-          query_count++;
+          cont_query_count++;
 
           int query_ip = packet_message[0];
           if (query_ip > MAXIP || query_ip < 0) {
@@ -191,11 +205,26 @@ void ControllerLoop(int num_switches) {
             errno = 0;
           }
 
-          add_count++;
+          cont_add_count++;
         } else {
           printf("Received %s packet. Ignored.\n", packet_type.c_str());
         }
       }
+    }
+
+    /*
+     * In addition, upon receiving signal USER1, the switch displays the information specified by the list command.
+     */
+    if (pfds[num_switches + 1].revents & POLLIN) {
+        struct signalfd_siginfo info{};
+        ssize_t r = read(pfds[num_switches + 2].fd, &info, sizeof(info));
+        if (!r) {
+            printf("Warning: Signal reading error.\n");
+        }
+        unsigned sig = info.ssi_signo;
+        if (sig == SIGUSR1) {
+            ControllerList();
+        }
     }
 
     memset(buffer, 0, sizeof(buffer));  // Clear buffer

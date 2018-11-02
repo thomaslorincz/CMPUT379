@@ -1,2 +1,5 @@
 .vscode
 a2sdn
+*.docx
+*.pdf
+*.tar.gz
