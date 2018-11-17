@@ -30,7 +30,7 @@ typedef struct {
   int ipHigh;
 } SwitchInfo;
 
-void cleanup(int numSwitches, int *sockets, pollfd *pfds, int mainSocketIdx) {
+void cleanup(int numSwitches, int sockets[], pollfd pfds[], int mainSocketIdx) {
   // Clean up sockets
   for (int i = 1; i < numSwitches + 1; i++) close(sockets[i]);
   close(pfds[mainSocketIdx].fd);
@@ -88,7 +88,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   // Create a managing socket
   if ((pfds[mainSocketIdx].fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     perror("Error: Could not create socket.\n");
-    cleanup(numSwitches, sockets, pfds, mainSocketIdx); // TODO: Put this everywhere
+    cleanup(numSwitches, sockets, pfds, mainSocketIdx);
     exit(errno);
   }
   // Prepare for non-blocking I/O polling from the managing socket

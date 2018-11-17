@@ -6,7 +6,7 @@
 
 using namespace std;
 
-void switchLoop(int id, int port1Id, int port2Id, tuple<int, int> ipRange, ifstream &in,
+void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstream &in,
                 string &serverAddress, uint16_t portNumber);
 
 #endif
