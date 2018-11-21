@@ -14,6 +14,9 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
 #include "util.h"
 
 #define CONTROLLER_ID 0
@@ -82,18 +85,18 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
         break;
       } else if (rule.actionType == "FORWARD") {
         if (rule.actionVal != 3) {
-          string relay_string = "RELAY:" + to_string(destIp);
+          string relayString = "RELAY:" + to_string(destIp);
 
           // Open the FIFO for writing if not done already
           if (!portToFd.count(rule.actionVal)) {
-            string relay_fifo = makeFifoName(switchId, rule.actionVal);
-            int portFd = openFifo(relay_fifo, O_WRONLY | O_NONBLOCK);
+            string relayFifo = makeFifoName(switchId, rule.actionVal);
+            int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
 
-            pair<int, int> port_conn = make_pair(portToId[rule.actionVal], portFd);
-            portToFd.insert(port_conn);
+            pair<int, int> portConn = make_pair(portToId[rule.actionVal], portFd);
+            portToFd.insert(portConn);
           }
 
-          write(portToFd[rule.actionVal], relay_string.c_str(), strlen(relay_string.c_str()));
+          write(portToFd[rule.actionVal], relayString.c_str(), strlen(relayString.c_str()));
           if (errno) {
             perror("Error: Failed to write.\n");
             exit(errno);
@@ -109,9 +112,9 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
   }
 
   if (!found) {
-    int query_fd = portToFd[CONTROLLER_ID];
-    string query_string = "QUERY:" + to_string(destIp);
-    write(query_fd, query_string.c_str(), strlen(query_string.c_str()));
+    int queryFd = portToFd[CONTROLLER_ID];
+    string queryString = "QUERY:" + to_string(destIp);
+    write(queryFd, queryString.c_str(), strlen(queryString.c_str()));
     if (errno) {
       perror("Error: Failed to write.\n");
       exit(errno);
@@ -189,8 +192,10 @@ void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int a
  * Sends and receives packets of varying types.
  */
 void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstream &in,
-                string &serverAddress, uint16_t portNumber) {
+                string &ipAdress, uint16_t portNumber) {
   vector<FlowRule> flowTable; // Flow rule table
+  flowTable.push_back({0, MAXIP, ipLow, ipHigh, "FORWARD", 3, MINPRI, 0}); // Add initial rule
+
   map<int, int> portToFd; // Map port number to FD
   map<int, int> portToId; // Map port number to switch ID
 
@@ -203,24 +208,51 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
   int queryCount = 0;
   int relayOutCount = 0;
 
-  // Add initial rule
-  flowTable.push_back({0, MAXIP, ipLow, ipHigh, "FORWARD", 3, MINPRI, 0});
-
-  int pfd_index = 0;
-  int receivers = 1;
+  int receivers = 1; // Must at least be connected to controller
   receivers = (port1Id != -1) ? receivers + 1 : receivers;
   receivers = (port2Id != -1) ? receivers + 1 : receivers;
+  int pfdsSize = receivers + 2;
+  int socketIdx = pfdsSize - 1;
 
   char buffer[MAX_BUFFER];
-  struct pollfd pfds[receivers + 2];
+  struct pollfd pfds[pfdsSize];
 
   // Set up STDIN for polling from
-  pfds[pfd_index].fd = STDIN_FILENO;
-  pfds[pfd_index].events = POLLIN;
-  pfds[pfd_index].revents = 0;
-  pfd_index++;
+  pfds[0].fd = STDIN_FILENO;
+  pfds[0].events = POLLIN;
+  pfds[0].revents = 0;
 
-  // TODO: Connect to conroller using TCP socket
+  struct sockaddr_in server {};
+
+  // Creating socket file descriptor
+  if ((pfds[socketIdx].fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    perror("Error: Could not create socket.");
+    exit(errno);
+  }
+  memset(&server, 0, sizeof(server));
+
+  server.sin_family = AF_INET;
+  server.sin_port = htons(portNumber);
+
+  // Convert IPv4 and IPv6 addresses from text to binary form
+  if (inet_pton(AF_INET, ipAdress.c_str(), &server.sin_addr) <= 0) {
+    perror("Error: Invalid IP address.");
+    // TODO: Cleanup?
+    exit(errno);
+  }
+
+  if (connect(pfds[socketIdx].fd, (struct sockaddr *) &server, sizeof(server)) < 0) {
+    perror("Error: Connections failed.");
+    // TODO: Cleanup?
+    exit(errno);
+  }
+
+  // Send an OPEN packet to the controller
+  string openPacket = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
+      + "," + to_string(ipLow) + "," + to_string(ipHigh);
+  write(pfds[socketIdx].fd, openPacket.c_str(), strlen(openPacket.c_str()));
+
+  int pfdIndex = 1;
 
   // TODO: Not DRY. Make a function.
   // Create and open a reading FIFO for port 1 if not null
@@ -228,10 +260,10 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     pair<int, int> port1Connection = make_pair(1, port1Id);
     portToId.insert(port1Connection);
     int port1Fd = createFifo(port1Id, id, O_RDONLY | O_NONBLOCK);
-    pfds[pfd_index].fd = port1Fd;
-    pfds[pfd_index].events = POLLIN;
-    pfds[pfd_index].revents = 0;
-    pfd_index++;
+    pfds[pfdIndex].fd = port1Fd;
+    pfds[pfdIndex].events = POLLIN;
+    pfds[pfdIndex].revents = 0;
+    pfdIndex++;
   }
 
   // Create and open a reading FIFO for port 2 if not null
@@ -239,9 +271,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     pair<int, int> port2Connection = make_pair(2, port2Id);
     portToId.insert(port2Connection);
     int port2Fd = createFifo(port2Id, id, O_RDONLY | O_NONBLOCK);
-    pfds[pfd_index].fd = port2Fd;
-    pfds[pfd_index].events = POLLIN;
-    pfds[pfd_index].revents = 0;
+    pfds[pfdIndex].fd = port2Fd;
+    pfds[pfdIndex].events = POLLIN;
+    pfds[pfdIndex].revents = 0;
   }
 
   while (true) {

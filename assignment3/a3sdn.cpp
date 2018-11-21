@@ -4,6 +4,9 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <netdb.h>
+#include <cstring>
+#include <arpa/inet.h>
 #include "controller.h"
 #include "switch.h"
 #include "util.h"
@@ -14,9 +17,53 @@
 using namespace std;
 
 /**
- * Parses IP range from command line argument input.
- * Returns a tuple comprised of the lower and upper IP range bounds if
- * successful. Exits the program if there is an error in parsing.
+ * http://www.logix.cz/michal/devel/various/getaddrinfo.c.xp
+ * @param address
+ * @return
+ */
+string getAddressInfo(string &address) {
+  struct addrinfo hints {}, *res;
+  char ipAddress[100];
+  void *ptr;
+
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = PF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags |= AI_CANONNAME;
+
+  int errorCode = getaddrinfo(address.c_str(), nullptr, &hints, &res);
+  if (errorCode != 0) {
+    perror("Error: Failed to get address info.");
+    exit(errorCode);
+  }
+
+  printf("Host: %s\n", address.c_str());
+  while (res) {
+    inet_ntop(res->ai_family, res->ai_addr->sa_data, ipAddress, 100);
+
+    switch (res->ai_family) {
+      case AF_INET:
+        ptr = &((struct sockaddr_in *) res->ai_addr)->sin_addr;
+        break;
+      case AF_INET6:
+        ptr = &((struct sockaddr_in6 *) res->ai_addr)->sin6_addr;
+        break;
+      default:
+        printf("Error: Invalid IP family. Expected AF_NET or AF_NET6.\n");
+        exit(EXIT_FAILURE);
+    }
+    inet_ntop(res->ai_family, ptr, ipAddress, 100);
+    printf("DEBUG: IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4,
+           ipAddress, res->ai_canonname);
+    res = res->ai_next;
+  }
+
+  return ipAddress;
+}
+
+/**
+ * Parses IP range from command line argument input. Returns a tuple comprised of the lower and
+ * upper IP range bounds if successful. Exits the program if there is an error in parsing.
  */
 tuple<int, int> parseIpRange(const string &input) {
   int ipLow = 0;
@@ -29,13 +76,13 @@ tuple<int, int> parseIpRange(const string &input) {
   while (getline(ss, token, '-')) {
     if (token.length()) {
       if (i == 0) {
-        ipLow = (int) strtol(token.c_str(), (char**) nullptr, 10);
+        ipLow = (int) strtol(token.c_str(), (char **) nullptr, 10);
         if (ipLow < 0 || ipLow > MAXIP || errno) {
           printf("Error: Invalid IP lower bound.\n");
           exit(EXIT_FAILURE);
         }
       } else if (i == 1) {
-        ipHigh = (int)strtol(token.c_str(), (char**) nullptr, 10);
+        ipHigh = (int) strtol(token.c_str(), (char **) nullptr, 10);
         if (ipHigh < 0 || ipHigh > MAXIP || errno) {
           printf("Error: Invalid IP lower bound.\n");
           exit(EXIT_FAILURE);
@@ -57,8 +104,8 @@ tuple<int, int> parseIpRange(const string &input) {
 }
 
 /**
- * Main function. Processes command line arguments into inputs for either the
- * controller loop or the switch loop.
+ * Main function. Processes command line arguments into inputs for either the controller loop or the
+ * switch loop.
  */
 int main(int argc, char **argv) {
   // Set a 10 minute CPU time limit
@@ -108,12 +155,17 @@ int main(int argc, char **argv) {
     tuple<int, int> ipRange = parseIpRange(argv[5]);
 
     string serverAddress = argv[6];
-    // TODO: Error checking?
+    string ipAddress = getAddressInfo(serverAddress);
+    printf("Found IP: %s\n", ipAddress.c_str());
 
+    // TODO: Test negative port number
     auto portNumber = (uint16_t) strtol(argv[7], (char **) nullptr, 10);
-    // TODO: Error checking?
+    if (portNumber < 0 || portNumber > 65535) {
+      printf("Error: Invalid port number. Must be 0-65535.\n");
+      return EXIT_FAILURE;
+    }
 
-    switchLoop(switchId, switchId1, switchId2, get<0>(ipRange), get<1>(ipRange), in, serverAddress,
+    switchLoop(switchId, switchId1, switchId2, get<0>(ipRange), get<1>(ipRange), in, ipAddress,
                portNumber);
   } else {
     printf("Error: Invalid mode specified.\n");

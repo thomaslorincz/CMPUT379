@@ -76,6 +76,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   struct pollfd pfds[pfdsSize];
   char buffer[MAX_BUFFER];
 
+  // Set up STDIN for polling from
   pfds[0].fd = STDIN_FILENO;
   pfds[0].events = POLLIN;
   pfds[0].revents = 0;
@@ -183,20 +184,12 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           switchInfoTable.push_back({packetMessage[0], packetMessage[1], packetMessage[2],
                                      packetMessage[3], packetMessage[4]});
 
-          string fifoName = makeFifoName(CONTROLLER_ID, i);
-          int fd = open(fifoName.c_str(), O_WRONLY | O_NONBLOCK);
-          if (errno) {
-            perror("Error: Could not open FIFO.\n");
-            cleanup(numSwitches, sockets, pfds, mainSocketIdx);
-            exit(errno);
-          }
-          idToFd.insert({i, fd});
+          idToFd.insert({i, pfds[socketIdx].fd});
 
           string ackMessage = "ACK:";
 
           // Write the ACK message
-          write(fd, ackMessage.c_str(), strlen(ackMessage.c_str()));
-          if (errno) {
+          if (write(pfds[socketIdx].fd, ackMessage.c_str(), strlen(ackMessage.c_str())) == -1) {
             perror("Error: Could not write.\n");
             cleanup(numSwitches, sockets, pfds, mainSocketIdx);
             exit(errno);
@@ -219,7 +212,6 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
               int relayId = 0;
 
               // Determine relay port
-              // NOTE: Assumes switches are ordered
               if (info.id > i) {
                 relayId = 2;
               } else {
