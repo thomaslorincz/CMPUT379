@@ -20,7 +20,7 @@
 #include "util.h"
 
 #define CONTROLLER_ID 0
-#define MAXIP 1000
+#define MAX_IP 1000
 #define MINPRI 4
 #define MAX_BUFFER 1024
 
@@ -85,8 +85,6 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
         break;
       } else if (rule.actionType == "FORWARD") {
         if (rule.actionVal != 3) {
-          string relayString = "RELAY:" + to_string(destIp);
-
           // Open the FIFO for writing if not done already
           if (!portToFd.count(rule.actionVal)) {
             string relayFifo = makeFifoName(switchId, rule.actionVal);
@@ -96,12 +94,7 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
             portToFd.insert(portConn);
           }
 
-          write(portToFd[rule.actionVal], relayString.c_str(), strlen(relayString.c_str()));
-          if (errno) {
-            perror("Error: Failed to write.\n");
-            exit(errno);
-          }
-
+          sendRelayPacket(portToFd[rule.actionVal], destIp);
           relayOutCount++;
         }
       }
@@ -112,14 +105,7 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
   }
 
   if (!found) {
-    int queryFd = portToFd[CONTROLLER_ID];
-    string queryString = "QUERY:" + to_string(destIp);
-    write(queryFd, queryString.c_str(), strlen(queryString.c_str()));
-    if (errno) {
-      perror("Error: Failed to write.\n");
-      exit(errno);
-    }
-
+    sendQueryPacket(portToFd[0], destIp);
     queryCount++;
   }
 }
@@ -144,30 +130,26 @@ tuple<int, int, int> parseTrafficFileLine(string &line) {
     id = parseSwitchId(tokens[0]);
 
     srcIp = (int) strtol(tokens[1].c_str(), (char **) nullptr, 10);
-    if (srcIp < 0 || srcIp > MAXIP || errno) {
+    if (srcIp < 0 || srcIp > MAX_IP || errno) {
       printf("Error: Invalid IP lower bound.\n");
       errno = 0;
       return make_tuple(-1, -1, -1);
     }
 
     destIp = (int) strtol(tokens[2].c_str(), (char **) nullptr, 10);
-    if (destIp < 0 || destIp > MAXIP || errno) {
+    if (destIp < 0 || destIp > MAX_IP || errno) {
       printf("Error: Invalid IP lower bound.\n");
       errno = 0;
       return make_tuple(-1, -1, -1);
     }
   }
 
-  for (auto &token : tokens) {
-    printf("%s ", token.c_str());
-  }
-  printf("\n");
-
   return make_tuple(id, srcIp, destIp);
 }
 
 /**
  * List the status information of the switch.
+ * TODO: Need to list contents of all seen packets
  */
 void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int addCount,
                 int relayInCount, int openCount, int queryCount, int relayOutCount) {
@@ -194,7 +176,7 @@ void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int a
 void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstream &in,
                 string &ipAdress, uint16_t portNumber) {
   vector<FlowRule> flowTable; // Flow rule table
-  flowTable.push_back({0, MAXIP, ipLow, ipHigh, "FORWARD", 3, MINPRI, 0}); // Add initial rule
+  flowTable.push_back({0, MAX_IP, ipLow, ipHigh, "FORWARD", 3, MINPRI, 0}); // Add initial rule
 
   map<int, int> portToFd; // Map port number to FD
   map<int, int> portToId; // Map port number to switch ID
@@ -237,24 +219,24 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
   // Convert IPv4 and IPv6 addresses from text to binary form
   if (inet_pton(AF_INET, ipAdress.c_str(), &server.sin_addr) <= 0) {
     perror("Error: Invalid IP address.");
-    // TODO: Cleanup?
     exit(errno);
   }
 
   if (connect(pfds[socketIdx].fd, (struct sockaddr *) &server, sizeof(server)) < 0) {
-    perror("Error: Connections failed.");
-    // TODO: Cleanup?
+    perror("Error: Connection failed.");
     exit(errno);
   }
 
+  pair<int, int> controllerToFd = make_pair(0, pfds[socketIdx].fd);
+  portToFd.insert(controllerToFd);
+  pair<int, int> controllerToId = make_pair(0, CONTROLLER_ID);
+  portToId.insert(controllerToId);
+
   // Send an OPEN packet to the controller
-  string openPacket = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
-      + "," + to_string(ipLow) + "," + to_string(ipHigh);
-  write(pfds[socketIdx].fd, openPacket.c_str(), strlen(openPacket.c_str()));
+  sendOpenPacket(pfds[socketIdx].fd, id, port1Id, port2Id, ipLow, ipHigh);
 
   int pfdIndex = 1;
 
-  // TODO: Not DRY. Make a function.
   // Create and open a reading FIFO for port 1 if not null
   if (port1Id != -1) {
     pair<int, int> port1Connection = make_pair(1, port1Id);
@@ -306,9 +288,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
     // Poll all input FIFOs.
     // Delayed slightly (100ms) to wait for response packets from the controller.
-    poll(pfds, (nfds_t) receivers + 2, 100);
+    poll(pfds, (nfds_t) pfdsSize, 100);
     if (errno) {
-      perror("Error: poll() failure.\n");
+      perror("poll() failure");
       exit(errno);
     }
 
@@ -319,8 +301,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
      * program writes the above information and exits.
      */
     if (pfds[0].revents & POLLIN) {
-      if (!read(pfds[0].fd, buffer, MAX_BUFFER)) { // TODO: Error checking?
-        printf("Warning: stdin closed.\n");
+      if (!read(pfds[0].fd, buffer, MAX_BUFFER)) {
+        printf("Error: stdin closed.\n");
+        exit(EXIT_FAILURE);
       }
 
       string cmd = string(buffer);
@@ -338,14 +321,18 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       }
     }
 
+    memset(buffer, 0, sizeof(buffer)); // Clear buffer
+
     /**
      * 3. Poll the incoming FIFOs from the controller and the attached switches. The switch handles
      * each incoming packet, as described in the Packet Types section.
      */
-    for (int i = 1; i <= receivers; i++) {
+    for (int i = 1; i <= receivers + 1; i++) {
       if (pfds[i].revents & POLLIN) {
-        if (!read(pfds[i].fd, buffer, MAX_BUFFER)) { // TODO: Error checking?
+        if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
           printf("Warning: Connection closed.\n");
+          close(pfds[i].fd);
+          continue;
         }
         string packetString = string(buffer);
         pair<string, vector<int>> receivedPacket = parsePacketString(packetString);
@@ -358,17 +345,15 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
           ackCount++;
         } else if (packetType == "ADD") {
           FlowRule newRule;
-          string newAction;
 
           if (packetMessage[0] == 0) {
-            newRule = {0, MAXIP, packetMessage[1], packetMessage[2], "DROP", 0, MINPRI, 1};
+            newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "DROP", packetMessage[3],
+                       MINPRI, 1};
           } else if (packetMessage[0] == 1) {
-            newRule = {0, MAXIP, packetMessage[1], packetMessage[2], "FORWARD", packetMessage[3],
+            newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "FORWARD", packetMessage[3],
                        MINPRI, 1};
 
-            // Relay the message based on the new rule
-            string relayString = "RELAY:" + to_string(packetMessage[1]);
-
+            // Open FIFO for writing if not done so already
             if (!portToFd.count(packetMessage[3])) {
               string relayFifo = makeFifoName(id, packetMessage[3]);
               int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
@@ -377,11 +362,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
               portToFd.insert(portConnection);
             }
 
-            write(portToFd[packetMessage[3]], relayString.c_str(), strlen(relayString.c_str()));
-            if (errno) {
-              perror("Error: Failed to write.\n");
-              exit(errno);
-            }
+            sendRelayPacket(portToFd[packetMessage[3]], packetMessage[1]);
             relayOutCount++;
           } else {
             printf("Error: Invalid rule to add.\n");
@@ -401,6 +382,6 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       }
     }
 
-    memset(buffer, 0, sizeof(buffer));  // Clear buffer
+    memset(buffer, 0, sizeof(buffer)); // Clear buffer
   }
 }

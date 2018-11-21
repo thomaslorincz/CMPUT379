@@ -3,6 +3,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unistd.h>
+#include <cstring>
+#include <poll.h>
 
 using namespace std;
 
@@ -74,4 +77,50 @@ int parseSwitchId(const string &input) {
 void trim(string &s) {
   s.erase(s.begin(), find_if(s.begin(), s.end(), [](int ch) { return !isspace(ch); }));
   s.erase(find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); }).base(), s.end());
+}
+
+void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipHigh) {
+  string openString = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
+      + "," + to_string(ipLow) + "," + to_string(ipHigh);
+  write(fd, openString.c_str(), strlen(openString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write.");
+    exit(errno);
+  }
+
+}
+
+void sendAckPacket(int fd) {
+  string ackString = "ACK:";
+  write(fd, ackString.c_str(), strlen(ackString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write");
+  }
+}
+
+void sendAddPacket(int fd, int action, int ipLow, int ipHigh, int relayId) {
+  string addString = "ADD:" + to_string(action) + "," + to_string(ipLow) + "," + to_string(ipHigh)
+      + "," + to_string(relayId);
+  write(fd, addString.c_str(), strlen(addString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write.");
+  }
+}
+
+void sendQueryPacket(int fd, int destIp) {
+  string queryString = "QUERY:" + to_string(destIp);
+  write(fd, queryString.c_str(), strlen(queryString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write.");
+    exit(errno);
+  }
+}
+
+void sendRelayPacket(int fd, int destIp) {
+  string relayString = "RELAY:" + to_string(destIp);
+  write(fd, relayString.c_str(), strlen(relayString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write.");
+    exit(errno);
+  }
 }

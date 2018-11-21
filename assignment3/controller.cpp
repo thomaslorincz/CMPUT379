@@ -18,23 +18,21 @@
 
 #define CONTROLLER_ID 0
 #define MAX_BUFFER 1024
-#define MAXIP 1000
+#define MAX_IP 1000
 
 using namespace std;
 
 typedef struct {
-  int id;
-  int port1Id;
-  int port2Id;
-  int ipLow;
-  int ipHigh;
+    int id;
+    int port1Id;
+    int port2Id;
+    int ipLow;
+    int ipHigh;
 } SwitchInfo;
 
-void cleanup(int numSwitches, int sockets[], pollfd pfds[], int mainSocketIdx) {
-  // Clean up sockets
-  for (int i = 1; i < numSwitches + 1; i++) close(sockets[i]);
-  close(pfds[mainSocketIdx].fd);
-  exit(errno);
+void cleanup(int numSwitches, pollfd pfds[]) {
+  for (int i = 0; i < numSwitches + 2; i++) close(pfds[i].fd);
+  exit(EXIT_SUCCESS);
 }
 
 /**
@@ -89,7 +87,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   // Create a managing socket
   if ((pfds[mainSocketIdx].fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     perror("Error: Could not create socket.\n");
-    cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+    cleanup(numSwitches, pfds);
     exit(errno);
   }
   // Prepare for non-blocking I/O polling from the managing socket
@@ -100,7 +98,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   int opt = 1;
   if (setsockopt(pfds[mainSocketIdx].fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
     perror("Error: Could not set socket options.\n");
-    cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+    cleanup(numSwitches, pfds);
     exit(errno);
   }
 
@@ -111,51 +109,51 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
   if (bind(pfds[mainSocketIdx].fd, (struct sockaddr *) &sin, sinLength) < 0) {
     perror("Error: Bind failure.\n");
-    cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+    cleanup(numSwitches, pfds);
     exit(errno);
   }
 
   // Indicate how many connection requests can be queued
   if (listen(pfds[mainSocketIdx].fd, numSwitches) < 0) {
     perror("Error: Listen failure.\n");
-    cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+    cleanup(numSwitches, pfds);
     exit(errno);
   }
 
   while (true) {
     /**
-     * 1. Poll the keyboard for a user command. The user can issue one of the
-     * following commands. list: The program writes all entries in the flow
-     * table, and for each transmitted or received packet type, the program
-     * writes an aggregate count of handled packets of this type. exit: The
-     * program writes the above information and exits.
+     * 1. Poll the keyboard for a user command. The user can issue one of the following commands.
+     * list: The program writes all entries in the flow table, and for each transmitted or received
+     * packet type, the program writes an aggregate count of handled packets of this type.
+     * exit: The program writes the above information and exits.
      */
     if (poll(pfds, (nfds_t) pfdsSize, 0) == -1) { // Poll from all file descriptors
       perror("Error: poll() failure.\n");
-      cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+      cleanup(numSwitches, pfds);
       exit(errno);
     }
 
     if (pfds[0].revents & POLLIN) {
       if (!read(pfds[0].fd, buffer, MAX_BUFFER)) {
-        printf("Warning: stdin closed.\n");  // TODO: errno?
+        printf("Error: stdin closed.\n");
+        exit(EXIT_FAILURE);
       }
 
       string cmd = string(buffer);
-      trim(cmd);  // trim whitespace
+      trim(cmd);  // Trim whitespace
 
       if (cmd == "list") {
         controllerList(switchInfoTable, openCount, queryCount, ackCount, addCount);
       } else if (cmd == "exit") {
         controllerList(switchInfoTable, openCount, queryCount, ackCount, addCount);
-        cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+        cleanup(numSwitches, pfds);
         exit(EXIT_SUCCESS);
       } else {
         printf("Error: Unrecognized command. Please use 'list' or 'exit'.\n");
       }
     }
 
-    memset(buffer, 0, sizeof(buffer));  // Clear buffer
+    memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
     /**
      * 2. Poll the incoming FIFOs from the attached switches. The controller
@@ -163,9 +161,13 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
      */
     for (int i = 1; i <= numSwitches; i++) {
       if (pfds[i].revents & POLLIN) {
+        // Check if the connection has closed
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
-          printf("Warning: Connection closed.\n"); // TODO: Error checking?
+          printf("Warning: Connection to sw%d closed.\n", i);
+          close(pfds[i].fd);
+          continue;
         }
+
         string packetString = string(buffer);
         pair<string, vector<int>> receivedPacket = parsePacketString(packetString);
         string packetType = get<0>(receivedPacket);
@@ -186,12 +188,10 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
           idToFd.insert({i, pfds[socketIdx].fd});
 
-          string ackMessage = "ACK:";
-
           // Write the ACK message
-          if (write(pfds[socketIdx].fd, ackMessage.c_str(), strlen(ackMessage.c_str())) == -1) {
-            perror("Error: Could not write.\n");
-            cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+          sendAckPacket(pfds[socketIdx].fd);
+          if (errno) {
+            cleanup(numSwitches, pfds);
             exit(errno);
           }
 
@@ -200,7 +200,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           queryCount++;
 
           int queryIp = packetMessage[0];
-          if (queryIp > MAXIP || queryIp < 0) {
+          if (queryIp > MAX_IP || queryIp < 0) {
             printf("Error: Invalid IP for QUERY. Dropping.\n");
             continue;
           }
@@ -219,13 +219,9 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
               }
 
               // Send new rule
-              string add_message = "ADD:1," + to_string(info.ipLow) + "," + to_string(info.ipHigh)
-                  + "," + to_string(relayId);
-
-              write(idToFd[i], add_message.c_str(), strlen(add_message.c_str()));
+              sendAddPacket(idToFd[i], 1, info.ipLow, info.ipHigh, relayId);
               if (errno) {
-                perror("Error: Could not write.\n");
-                cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+                cleanup(numSwitches, pfds);
                 exit(errno);
               }
 
@@ -236,11 +232,9 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
           // If nothing is found in the info table, tell the switch to drop
           if (!found) {
-            string addMessage = "ADD:0," + to_string(queryIp) + "," + to_string(queryIp);
-            write(idToFd[i], addMessage.c_str(), strlen(addMessage.c_str()));
+            sendAddPacket(idToFd[i], 0, queryIp, queryIp, 0);
             if (errno) {
-              perror("Error: Could not write.\n");
-              cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+              cleanup(numSwitches, pfds);
               exit(errno);
             }
           }
@@ -252,23 +246,22 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
       }
     }
 
-    memset(buffer, 0, sizeof(buffer));  // Clear buffer
+    memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
-    /**
-     * Check the socket file descriptor for events.
-     */
+    // Check the socket file descriptor for events
     if (pfds[mainSocketIdx].revents & POLLIN) {
       if ((sockets[socketIdx] =
-           accept(pfds[mainSocketIdx].fd, (struct sockaddr*) &from, &fromLength)) < 0) {
-        perror("Error: Could not accept connection.\n");
-        cleanup(numSwitches, sockets, pfds, mainSocketIdx);
+              accept(pfds[mainSocketIdx].fd, (struct sockaddr *) &from, &fromLength)) < 0) {
+        perror("Error: Could not accept connection.");
+        cleanup(numSwitches, pfds);
         exit(errno);
       }
       pfds[socketIdx].fd = sockets[socketIdx];
       pfds[socketIdx].events = POLLIN;
       pfds[socketIdx].revents = 0;
-      printf("INFO: new client connection, socket fd:%d , ip:%s , port:%hu\n",
-             pfds[socketIdx].fd, inet_ntoa(sin.sin_addr) , ntohs (sin.sin_port));
+      printf("DEBUG: New client socket connection, fd:%d\n", pfds[socketIdx].fd);
     }
+
+    memset(buffer, 0, sizeof(buffer)); // Clear buffer
   }
 }

@@ -12,7 +12,7 @@
 #include "util.h"
 
 #define MAX_NSW 7
-#define MAXIP 1000
+#define MAX_IP 1000
 
 using namespace std;
 
@@ -77,13 +77,13 @@ tuple<int, int> parseIpRange(const string &input) {
     if (token.length()) {
       if (i == 0) {
         ipLow = (int) strtol(token.c_str(), (char **) nullptr, 10);
-        if (ipLow < 0 || ipLow > MAXIP || errno) {
+        if (ipLow < 0 || ipLow > MAX_IP || errno) {
           printf("Error: Invalid IP lower bound.\n");
           exit(EXIT_FAILURE);
         }
       } else if (i == 1) {
         ipHigh = (int) strtol(token.c_str(), (char **) nullptr, 10);
-        if (ipHigh < 0 || ipHigh > MAXIP || errno) {
+        if (ipHigh < 0 || ipHigh > MAX_IP || errno) {
           printf("Error: Invalid IP lower bound.\n");
           exit(EXIT_FAILURE);
         }
@@ -131,7 +131,6 @@ int main(int argc, char **argv) {
     }
 
     auto portNumber = (uint16_t) strtol(argv[3], (char **) nullptr, 10);
-    // TODO: Error checking?
 
     controllerLoop(numSwitches, portNumber);
   } else if (mode.find("sw") != std::string::npos) {
@@ -158,17 +157,12 @@ int main(int argc, char **argv) {
     string ipAddress = getAddressInfo(serverAddress);
     printf("Found IP: %s\n", ipAddress.c_str());
 
-    // TODO: Test negative port number
     auto portNumber = (uint16_t) strtol(argv[7], (char **) nullptr, 10);
-    if (portNumber < 0 || portNumber > 65535) {
-      printf("Error: Invalid port number. Must be 0-65535.\n");
-      return EXIT_FAILURE;
-    }
 
     switchLoop(switchId, switchId1, switchId2, get<0>(ipRange), get<1>(ipRange), in, ipAddress,
                portNumber);
   } else {
-    printf("Error: Invalid mode specified.\n");
+    printf("Error: Invalid mode specified. Expected cont or swi.\n");
     return EXIT_FAILURE;
   }
 
