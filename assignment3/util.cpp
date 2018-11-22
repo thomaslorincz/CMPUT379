@@ -79,48 +79,20 @@ void trim(string &s) {
   s.erase(find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); }).base(), s.end());
 }
 
-void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipHigh) {
-  string openString = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
-      + "," + to_string(ipLow) + "," + to_string(ipHigh);
-  write(fd, openString.c_str(), strlen(openString.c_str()));
-  if (errno) {
-    perror("Error: Failed to write.");
-    exit(errno);
+void printTransmitMessage(int srcId, int destId) {
+  string src;
+  if (srcId == 0) {
+    src = "cont";
+  } else {
+    src = "sw" + to_string(srcId);
   }
 
-}
-
-void sendAckPacket(int fd) {
-  string ackString = "ACK:";
-  write(fd, ackString.c_str(), strlen(ackString.c_str()));
-  if (errno) {
-    perror("Error: Failed to write");
+  string dest;
+  if (destId == 0) {
+    dest = "cont";
+  } else {
+    dest = "sw" + to_string(destId);
   }
-}
 
-void sendAddPacket(int fd, int action, int ipLow, int ipHigh, int relayId) {
-  string addString = "ADD:" + to_string(action) + "," + to_string(ipLow) + "," + to_string(ipHigh)
-      + "," + to_string(relayId);
-  write(fd, addString.c_str(), strlen(addString.c_str()));
-  if (errno) {
-    perror("Error: Failed to write.");
-  }
-}
-
-void sendQueryPacket(int fd, int destIp) {
-  string queryString = "QUERY:" + to_string(destIp);
-  write(fd, queryString.c_str(), strlen(queryString.c_str()));
-  if (errno) {
-    perror("Error: Failed to write.");
-    exit(errno);
-  }
-}
-
-void sendRelayPacket(int fd, int destIp) {
-  string relayString = "RELAY:" + to_string(destIp);
-  write(fd, relayString.c_str(), strlen(relayString.c_str()));
-  if (errno) {
-    perror("Error: Failed to write.");
-    exit(errno);
-  }
+  printf("Transmit (src= %s, dest= %s)", src.c_str(), dest.c_str());
 }

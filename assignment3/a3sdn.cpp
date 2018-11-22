@@ -33,7 +33,7 @@ string getAddressInfo(string &address) {
 
   int errorCode = getaddrinfo(address.c_str(), nullptr, &hints, &res);
   if (errorCode != 0) {
-    perror("Error: Failed to get address info.");
+    perror("getaddrinfo() failure");
     exit(errorCode);
   }
 

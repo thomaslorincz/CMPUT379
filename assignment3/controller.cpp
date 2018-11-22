@@ -23,6 +23,13 @@
 using namespace std;
 
 typedef struct {
+    int open;
+    int query;
+    int add;
+    int ack;
+} ControllerPacketCounts;
+
+typedef struct {
     int id;
     int port1Id;
     int port2Id;
@@ -30,16 +37,60 @@ typedef struct {
     int ipHigh;
 } SwitchInfo;
 
+/**
+ * Function used to close all FD connections before exiting.
+ * @param numSwitches
+ * @param pfds
+ */
 void cleanup(int numSwitches, pollfd pfds[]) {
   for (int i = 0; i < numSwitches + 2; i++) close(pfds[i].fd);
   exit(EXIT_SUCCESS);
 }
 
 /**
- * List the controller status information including switches known and packets seen.
+ *
+ * @param numSwitches
+ * @param pfds
+ * @param fd
  */
-void controllerList(vector<SwitchInfo> switchInfoTable, int openCount, int queryCount,
-                    int ackCount, int addCount) {
+void sendAckPacket(int numSwitches, pollfd pfds[], int fd) {
+  string ackString = "ACK:";
+  write(fd, ackString.c_str(), strlen(ackString.c_str()));
+  if (errno) {
+    perror("Failed to write");
+    cleanup(numSwitches, pfds);
+    exit(errno);
+  }
+}
+
+/**
+ *
+ * @param numSwitches
+ * @param pfds
+ * @param fd
+ * @param action
+ * @param ipLow
+ * @param ipHigh
+ * @param relayId
+ */
+void sendAddPacket(int numSwitches, pollfd pfds[], int fd, int action, int ipLow, int ipHigh,
+                   int relayId) {
+  string addString = "ADD:" + to_string(action) + "," + to_string(ipLow) + "," + to_string(ipHigh)
+                     + "," + to_string(relayId);
+  write(fd, addString.c_str(), strlen(addString.c_str()));
+  if (errno) {
+    perror("Failed to write");
+    cleanup(numSwitches, pfds);
+    exit(errno);
+  }
+}
+
+/**
+ * List the controller status information including switches known and packets seen.
+ * @param switchInfoTable
+ * @param counts
+ */
+void controllerList(vector<SwitchInfo> switchInfoTable, ControllerPacketCounts &counts) {
   printf("Switch information:\n");
   for (auto &info : switchInfoTable) {
     printf("[sw%i]: port1= %i, port2= %i, port3= %i-%i\n", info.id, info.port1Id, info.port2Id,
@@ -47,12 +98,14 @@ void controllerList(vector<SwitchInfo> switchInfoTable, int openCount, int query
   }
   printf("\n");
   printf("Packet stats:\n");
-  printf("\tReceived:    OPEN:%i, QUERY:%i\n", openCount, queryCount);
-  printf("\tTransmitted: ACK:%i, ADD:%i\n", ackCount, addCount);
+  printf("\tReceived:    OPEN:%i, QUERY:%i\n", counts.open, counts.query);
+  printf("\tTransmitted: ACK:%i, ADD:%i\n", counts.ack, counts.add);
 }
 
 /**
  * Main controller event loop. Communicates with switches via TCP sockets.
+ * @param numSwitches
+ * @param portNumber
  */
 void controllerLoop(int numSwitches, uint16_t portNumber) {
   // Table containing info about opened switches
@@ -62,10 +115,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   map<int, int> idToFd;
 
   // Counts of each type of packet seen
-  int openCount = 0;
-  int queryCount = 0;
-  int ackCount = 0;
-  int addCount = 0;
+  ControllerPacketCounts counts = {0, 0, 0, 0};
 
   // Set up indices for easy reference
   int pfdsSize = numSwitches + 2;
@@ -108,27 +158,27 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   sin.sin_port = htons(portNumber);
 
   if (bind(pfds[mainSocketIdx].fd, (struct sockaddr *) &sin, sinLength) < 0) {
-    perror("Error: Bind failure.\n");
+    perror("bind() failure");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
 
   // Indicate how many connection requests can be queued
   if (listen(pfds[mainSocketIdx].fd, numSwitches) < 0) {
-    perror("Error: Listen failure.\n");
+    perror("listen() failure");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
 
   while (true) {
-    /**
+    /*
      * 1. Poll the keyboard for a user command. The user can issue one of the following commands.
      * list: The program writes all entries in the flow table, and for each transmitted or received
      * packet type, the program writes an aggregate count of handled packets of this type.
      * exit: The program writes the above information and exits.
      */
-    if (poll(pfds, (nfds_t) pfdsSize, 0) == -1) { // Poll from all file descriptors
-      perror("Error: poll() failure.\n");
+    if (poll(pfds, (nfds_t) pfdsSize, 100) == -1) { // Poll from all file descriptors
+      perror("poll() failure");
       cleanup(numSwitches, pfds);
       exit(errno);
     }
@@ -143,9 +193,9 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
       trim(cmd);  // Trim whitespace
 
       if (cmd == "list") {
-        controllerList(switchInfoTable, openCount, queryCount, ackCount, addCount);
+        controllerList(switchInfoTable, counts);
       } else if (cmd == "exit") {
-        controllerList(switchInfoTable, openCount, queryCount, ackCount, addCount);
+        controllerList(switchInfoTable, counts);
         cleanup(numSwitches, pfds);
         exit(EXIT_SUCCESS);
       } else {
@@ -155,9 +205,9 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
     memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
-    /**
-     * 2. Poll the incoming FIFOs from the attached switches. The controller
-     * handles each incoming packet, as described in the Packet Types section.
+    /*
+     * 2. Poll the incoming FIFOs from the attached switches. The controller handles each incoming
+     * packet, as described in the Packet Types section.
      */
     for (int i = 1; i <= numSwitches; i++) {
       if (pfds[i].revents & POLLIN) {
@@ -176,28 +226,14 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
         printf("Received packet: %s\n", buffer);
 
         if (packetType == "OPEN") {
-          openCount++;
-
-          if (packetMessage.size() < 5) {
-            printf("Error: Invalid OPEN packet.\n");
-            continue;
-          }
-
+          counts.open++;
           switchInfoTable.push_back({packetMessage[0], packetMessage[1], packetMessage[2],
                                      packetMessage[3], packetMessage[4]});
-
           idToFd.insert({i, pfds[socketIdx].fd});
-
-          // Write the ACK message
-          sendAckPacket(pfds[socketIdx].fd);
-          if (errno) {
-            cleanup(numSwitches, pfds);
-            exit(errno);
-          }
-
-          ackCount++;
+          sendAckPacket(numSwitches, pfds, pfds[socketIdx].fd);
+          counts.ack++;
         } else if (packetType == "QUERY") {
-          queryCount++;
+          counts.query++;
 
           int queryIp = packetMessage[0];
           if (queryIp > MAX_IP || queryIp < 0) {
@@ -219,11 +255,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
               }
 
               // Send new rule
-              sendAddPacket(idToFd[i], 1, info.ipLow, info.ipHigh, relayId);
-              if (errno) {
-                cleanup(numSwitches, pfds);
-                exit(errno);
-              }
+              sendAddPacket(numSwitches, pfds, idToFd[i], 1, info.ipLow, info.ipHigh, relayId);
 
               found = true;
               break;
@@ -232,14 +264,10 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
           // If nothing is found in the info table, tell the switch to drop
           if (!found) {
-            sendAddPacket(idToFd[i], 0, queryIp, queryIp, 0);
-            if (errno) {
-              cleanup(numSwitches, pfds);
-              exit(errno);
-            }
+            sendAddPacket(numSwitches, pfds, idToFd[i], 0, queryIp, queryIp, 0);
           }
 
-          addCount++;
+          counts.add++;
         } else {
           printf("Received %s packet. Ignored.\n", packetType.c_str());
         }
@@ -251,8 +279,8 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
     // Check the socket file descriptor for events
     if (pfds[mainSocketIdx].revents & POLLIN) {
       if ((sockets[socketIdx] =
-              accept(pfds[mainSocketIdx].fd, (struct sockaddr *) &from, &fromLength)) < 0) {
-        perror("Error: Could not accept connection.");
+               accept(pfds[mainSocketIdx].fd, (struct sockaddr *) &from, &fromLength)) < 0) {
+        perror("accept() failure");
         cleanup(numSwitches, pfds);
         exit(errno);
       }

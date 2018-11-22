@@ -19,23 +19,62 @@
 #include <arpa/inet.h>
 #include "util.h"
 
+#define CONTROLLER_PORT 0
 #define CONTROLLER_ID 0
 #define MAX_IP 1000
-#define MINPRI 4
+#define MIN_PRI 4
 #define MAX_BUFFER 1024
 
 using namespace std;
 
 typedef struct {
-  int srcIpLow;
-  int srcIpHigh;
-  int destIpLow;
-  int destIpHigh;
-  string actionType;  // FORWARD, DROP
-  int actionVal;
-  int pri;  // 0, 1, 2, 3, 4 (highest - lowest)
-  int pktCount;
+    int admit;
+    int ack;
+    int add;
+    int relayIn;
+    int open;
+    int query;
+    int relayOut;
+} SwitchPacketCounts;
+
+typedef struct {
+    int srcIpLow;
+    int srcIpHigh;
+    int destIpLow;
+    int destIpHigh;
+    string actionType;  // FORWARD, DROP
+    int actionVal;
+    int pri;  // 0, 1, 2, 3, 4 (highest - lowest)
+    int pktCount;
 } FlowRule;
+
+void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipHigh) {
+  string openString = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
+                      + "," + to_string(ipLow) + "," + to_string(ipHigh);
+  write(fd, openString.c_str(), strlen(openString.c_str()));
+  if (errno) {
+    perror("Error: Failed to write.");
+    exit(errno);
+  }
+}
+
+void sendQueryPacket(int fd, int destIp) {
+  string queryString = "QUERY:" + to_string(destIp);
+  write(fd, queryString.c_str(), strlen(queryString.c_str()));
+  if (errno) {
+    perror("Failed to write");
+    exit(errno);
+  }
+}
+
+void sendRelayPacket(int fd, int destIp) {
+  string relayString = "RELAY:" + to_string(destIp);
+  write(fd, relayString.c_str(), strlen(relayString.c_str()));
+  if (errno) {
+    perror("Failed to write");
+    exit(errno);
+  }
+}
 
 /**
  * Opens a FIFO for reading or writing.
@@ -44,7 +83,7 @@ int openFifo(string &fifo_name, int flag) {
   // Returns lowest unused file descriptor on success
   int fd = open(fifo_name.c_str(), flag);
   if (errno) {
-    perror("Error: Could not open FIFO.\n");
+    perror("Failed to open FIFO");
     exit(errno);
   }
 
@@ -59,7 +98,7 @@ int createFifo(int src, int dest, int flag) {
 
   mkfifo(fifoName.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
   if (errno) {
-    perror("Error: Could not create a FIFO connection.\n");
+    perror("Failed to create FIFO connection");
     exit(errno);
   }
 
@@ -76,7 +115,7 @@ int createFifo(int src, int dest, int flag) {
  */
 void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &portToFd,
                                 map<int, int> &portToId, int switchId, int destIp,
-                                int &relayOutCount, int &queryCount) {
+                                SwitchPacketCounts &counts) {
   bool found = false;
   for (auto &rule : flowTable) {
     if (destIp >= rule.destIpLow && destIp <= rule.destIpHigh) {
@@ -95,7 +134,7 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
           }
 
           sendRelayPacket(portToFd[rule.actionVal], destIp);
-          relayOutCount++;
+          counts.relayOut++;
         }
       }
 
@@ -105,8 +144,8 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
   }
 
   if (!found) {
-    sendQueryPacket(portToFd[0], destIp);
-    queryCount++;
+    sendQueryPacket(portToFd[CONTROLLER_PORT], destIp);
+    counts.query++;
   }
 }
 
@@ -151,8 +190,7 @@ tuple<int, int, int> parseTrafficFileLine(string &line) {
  * List the status information of the switch.
  * TODO: Need to list contents of all seen packets
  */
-void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int addCount,
-                int relayInCount, int openCount, int queryCount, int relayOutCount) {
+void switchList(vector<FlowRule> &flowTable, SwitchPacketCounts &counts) {
   printf("Flow table:\n");
   int i = 0;
   for (auto &rule : flowTable) {
@@ -164,9 +202,10 @@ void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int a
   }
   printf("\n");
   printf("Packet Stats:\n");
-  printf("\tReceived:    ADMIT:%i, ACK:%i, ADDRULE:%i, RELAYIN:%i\n", admitCount, ackCount,
-         addCount, relayInCount);
-  printf("\tTransmitted: OPEN: %i, QUERY:%i, RELAYOUT: %i\n", openCount, queryCount, relayOutCount);
+  printf("\tReceived:    ADMIT:%i, ACK:%i, ADDRULE:%i, RELAYIN:%i\n", counts.admit, counts.ack,
+         counts.add, counts.relayIn);
+  printf("\tTransmitted: OPEN: %i, QUERY:%i, RELAYOUT: %i\n", counts.open, counts.query,
+         counts.relayOut);
 }
 
 /**
@@ -176,19 +215,13 @@ void switchList(vector<FlowRule> &flowTable, int admitCount, int ackCount, int a
 void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstream &in,
                 string &ipAdress, uint16_t portNumber) {
   vector<FlowRule> flowTable; // Flow rule table
-  flowTable.push_back({0, MAX_IP, ipLow, ipHigh, "FORWARD", 3, MINPRI, 0}); // Add initial rule
+  flowTable.push_back({0, MAX_IP, ipLow, ipHigh, "FORWARD", 3, MIN_PRI, 0}); // Add initial rule
 
   map<int, int> portToFd; // Map port number to FD
   map<int, int> portToId; // Map port number to switch ID
 
-  // Counts of all seen packets
-  int admitCount = 0;
-  int ackCount = 0;
-  int addCount = 0;
-  int relayInCount = 0;
-  int openCount = 0;
-  int queryCount = 0;
-  int relayOutCount = 0;
+  // Counts the number of each type of packet seen
+  SwitchPacketCounts counts = {0, 0, 0, 0, 0, 0, 0};
 
   int receivers = 1; // Must at least be connected to controller
   receivers = (port1Id != -1) ? receivers + 1 : receivers;
@@ -208,7 +241,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
   // Creating socket file descriptor
   if ((pfds[socketIdx].fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-    perror("Error: Could not create socket.");
+    perror("socket() failure");
     exit(errno);
   }
   memset(&server, 0, sizeof(server));
@@ -218,12 +251,12 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
   // Convert IPv4 and IPv6 addresses from text to binary form
   if (inet_pton(AF_INET, ipAdress.c_str(), &server.sin_addr) <= 0) {
-    perror("Error: Invalid IP address.");
+    perror("Invalid IP address");
     exit(errno);
   }
 
   if (connect(pfds[socketIdx].fd, (struct sockaddr *) &server, sizeof(server)) < 0) {
-    perror("Error: Connection failed.");
+    perror("connect() failure");
     exit(errno);
   }
 
@@ -258,43 +291,44 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     pfds[pfdIndex].revents = 0;
   }
 
+  // The switch waits for ACK from the controller before reading the traffic file
+  bool ackReceived = false;
+
   while (true) {
-    /**
+    /*
      * 1. Read and process a single line from the traffic line (if the EOF has not been reached
      * yet). The switch ignores empty lines, comment lines, and lines specifying other handling
      * switches. A packet header is considered admitted if the line specifies the current switch.
      */
-    tuple<int, int, int> trafficInfo;
-    string line;
-    if (in.is_open()) {
-      if (getline(in, line)) {
-        trafficInfo = parseTrafficFileLine(line);
+    if (ackReceived) {
+      tuple<int, int, int> trafficInfo;
+      string line;
+      if (in.is_open()) {
+        if (getline(in, line)) {
+          trafficInfo = parseTrafficFileLine(line);
 
-        int trafficId = get<0>(trafficInfo);
-        int srcIp = get<1>(trafficInfo);
-        int destIp = get<2>(trafficInfo);
+          int trafficId = get<0>(trafficInfo);
+          int srcIp = get<1>(trafficInfo);
+          int destIp = get<2>(trafficInfo);
 
-        if (id != trafficId || (trafficId == -1 && srcIp == -1 && destIp == -1)) {
-          // Ignore
+          if (id != trafficId || (trafficId == -1 && srcIp == -1 && destIp == -1)) {
+            // Ignore
+          } else {
+            counts.admit++;
+            handlePacketUsingFlowTable(flowTable, portToFd, portToId, id, destIp, counts);
+          }
         } else {
-          admitCount++;
-          handlePacketUsingFlowTable(flowTable, portToFd, portToId, id, destIp, relayOutCount,
-                                     queryCount);
+          in.close();
         }
-      } else {
-        in.close();
       }
     }
 
-    // Poll all input FIFOs.
-    // Delayed slightly (100ms) to wait for response packets from the controller.
-    poll(pfds, (nfds_t) pfdsSize, 100);
-    if (errno) {
+    if (poll(pfds, (nfds_t) pfdsSize, 100) == -1) { // Poll from all file descriptors
       perror("poll() failure");
       exit(errno);
     }
 
-    /**
+    /*
      * 2. Poll the keyboard for a user command. The user can issue one of the following commands.
      * list: The program writes all entries in the flow table, and for each transmitted or received
      * packet type, the program writes an aggregate count of handled packets of this type. exit: The
@@ -310,11 +344,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       trim(cmd);  // trim whitespace
 
       if (cmd == "list") {
-        switchList(flowTable, admitCount, ackCount, addCount, relayInCount, openCount, queryCount,
-                   relayOutCount);
+        switchList(flowTable, counts);
       } else if (cmd == "exit") {
-        switchList(flowTable, admitCount, ackCount, addCount, relayInCount, openCount, queryCount,
-                   relayOutCount);
+        switchList(flowTable, counts);
         exit(EXIT_SUCCESS);
       } else {
         printf("Error: Unrecognized command. Please use list or exit.\n");
@@ -323,14 +355,14 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
     memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
-    /**
+    /*
      * 3. Poll the incoming FIFOs from the controller and the attached switches. The switch handles
      * each incoming packet, as described in the Packet Types section.
      */
     for (int i = 1; i <= receivers + 1; i++) {
       if (pfds[i].revents & POLLIN) {
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
-          printf("Warning: Connection closed.\n");
+          printf("Warning: Connection closed.\n"); // TODO: Connection to where?
           close(pfds[i].fd);
           continue;
         }
@@ -342,16 +374,17 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
         printf("Received packet: %s\n", buffer);
 
         if (packetType == "ACK") {
-          ackCount++;
+          counts.ack++;
+          ackReceived = true;
         } else if (packetType == "ADD") {
           FlowRule newRule;
 
           if (packetMessage[0] == 0) {
             newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "DROP", packetMessage[3],
-                       MINPRI, 1};
+                       MIN_PRI, 1};
           } else if (packetMessage[0] == 1) {
             newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "FORWARD", packetMessage[3],
-                       MINPRI, 1};
+                       MIN_PRI, 1};
 
             // Open FIFO for writing if not done so already
             if (!portToFd.count(packetMessage[3])) {
@@ -363,18 +396,17 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
             }
 
             sendRelayPacket(portToFd[packetMessage[3]], packetMessage[1]);
-            relayOutCount++;
+            counts.relayOut++;
           } else {
             printf("Error: Invalid rule to add.\n");
             continue;
           }
 
           flowTable.push_back(newRule);
-          addCount++;
+          counts.add++;
         } else if (packetType == "RELAY") {
-          relayInCount++;
-          handlePacketUsingFlowTable(flowTable, portToFd, portToId, id, packetMessage[0],
-                                     relayOutCount, queryCount);
+          counts.relayIn++;
+          handlePacketUsingFlowTable(flowTable, portToFd, portToId, id, packetMessage[0], counts);
         } else {
           // Unknown packet. Used for debugging.
           printf("Received %s packet. Ignored.\n", packetType.c_str());
