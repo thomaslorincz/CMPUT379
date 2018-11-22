@@ -15,7 +15,6 @@
 #include "util.h"
 
 #define PFDS_SIZE 5
-#define CONTROLLER_PORT 0
 #define CONTROLLER_ID 0
 #define MAX_IP 1000
 #define MIN_PRI 4
@@ -52,6 +51,10 @@ typedef struct {
  * By: https://stackoverflow.com/users/321937/oz
  */
 bool isDelayed(long startTime, int duration) {
+  if (duration == 0) {
+    return false;
+  }
+
   milliseconds currentTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
   return currentTime.count() < (startTime + duration);
 }
@@ -64,25 +67,39 @@ void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipH
     perror("write() failure");
     exit(errno);
   }
+
+  string direction = "Transmitted";
+  string type = "OPEN";
+  pair<string, vector<int>> parsedPacket = parsePacketString(openString);
+  printPacketMessage(direction, id, 0, type, parsedPacket.second);
 }
 
-// TODO: srcIp
-void sendQueryPacket(int fd, int destIp) {
-  string queryString = "QUERY:" + to_string(destIp);
+void sendQueryPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
+  string queryString = "QUERY:" + to_string(srcIp) + "," + to_string(destIp);
   write(fd, queryString.c_str(), strlen(queryString.c_str()));
   if (errno) {
     perror("write() failure");
     exit(errno);
   }
+
+  string direction = "Transmitted";
+  string type = "QUERY";
+  pair<string, vector<int>> parsedPacket = parsePacketString(queryString);
+  printPacketMessage(direction, srcId, destId, type, parsedPacket.second);
 }
 
-void sendRelayPacket(int fd, int destIp) {
-  string relayString = "RELAY:" + to_string(destIp);
+void sendRelayPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
+  string relayString = "RELAY:" + to_string(srcIp) + "," + to_string(destIp);
   write(fd, relayString.c_str(), strlen(relayString.c_str()));
   if (errno) {
     perror("write() failure");
     exit(errno);
   }
+
+  string direction = "Transmitted";
+  string type = "RELAY";
+  pair<string, vector<int>> parsedPacket = parsePacketString(relayString);
+  printPacketMessage(direction, srcId, destId, type, parsedPacket.second);
 }
 
 /**
@@ -107,15 +124,11 @@ int createFifo(int src, int dest, int flag) {
 
   mkfifo(fifoName.c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
   if (errno) {
-    perror("Failed to create FIFO connection");
+    perror("mkfifo() failure");
     exit(errno);
   }
 
-  int fd = openFifo(fifoName, flag);
-
-  printf("Created %s fd = %i\n", fifoName.c_str(), fd);
-
-  return fd;
+  return openFifo(fifoName, flag);
 }
 
 /**
@@ -124,7 +137,7 @@ int createFifo(int src, int dest, int flag) {
  * https://stackoverflow.com/a/237280
  * By: https://stackoverflow.com/users/30767/zunino
  */
-tuple<string, vector<int>> parseTrafficFileLine(string &line) {
+pair<string, vector<int>> parseTrafficFileLine(string &line) {
   string type;
   vector<int> content;
 
@@ -139,6 +152,7 @@ tuple<string, vector<int>> parseTrafficFileLine(string &line) {
     type = "comment";
   } else {
     id = parseSwitchId(tokens[0]);
+    content.push_back(id);
 
     if (tokens[1] == "delay") {
       type = "delay";
@@ -152,7 +166,6 @@ tuple<string, vector<int>> parseTrafficFileLine(string &line) {
       }
     } else {
       type = "action";
-      content.push_back(id);
 
       srcIp = (int) strtol(tokens[1].c_str(), (char **) nullptr, 10);
       if (srcIp < 0 || srcIp > MAX_IP || errno) {
@@ -162,7 +175,6 @@ tuple<string, vector<int>> parseTrafficFileLine(string &line) {
       } else {
         content.push_back(srcIp);
       }
-
 
       destIp = (int) strtol(tokens[2].c_str(), (char **) nullptr, 10);
       if (destIp < 0 || destIp > MAX_IP || errno) {
@@ -175,13 +187,12 @@ tuple<string, vector<int>> parseTrafficFileLine(string &line) {
     }
   }
 
-  return make_tuple(type, content);
+  return make_pair(type, content);
 }
 
 /**
  * List the status information of the switch.
  */
-// TODO: Need to list contents of all seen packets
 void switchList(vector<FlowRule> &flowTable, SwitchPacketCounts &counts) {
   printf("Flow table:\n");
   int i = 0;
@@ -294,27 +305,32 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
      * switches. A packet header is considered admitted if the line specifies the current switch.
      */
     if (ackReceived && addReceived && !isDelayed(delayStartTime, delayDuration)) {
-      tuple<string, vector<int>> trafficInfo;
+      // Reset delay variables
+      delayStartTime = 0;
+      delayDuration = 0;
+
+      pair<string, vector<int>> trafficInfo;
       string line;
       if (in.is_open()) {
         if (getline(in, line)) {
           trafficInfo = parseTrafficFileLine(line);
 
-          string type = get<0>(trafficInfo);
-          vector<int> content = get<1>(trafficInfo);
+          string type = trafficInfo.first;
+          vector<int> content = trafficInfo.second;
 
           if (type == "action") {
             int trafficId = content[0];
             int srcIp = content[1];
             int destIp = content[2];
 
-            if (id == trafficId && srcIp >= ipLow && srcIp <= ipHigh) {
+            if (id == trafficId) {
               counts.admit++;
 
               // Handle the packet using the flow table
               bool found = false;
               for (auto &rule : flowTable) {
                 if (destIp >= rule.destIpLow && destIp <= rule.destIpHigh) {
+                  found = true;
                   rule.pktCount++;
                   if (rule.actionType == "DROP") {
                     break;
@@ -328,33 +344,36 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
                         portToFd.insert(portConn);
                       }
 
-                      sendRelayPacket(portToFd[rule.actionVal], destIp);
+                      sendRelayPacket(portToFd[rule.actionVal], id, portToId[rule.actionVal], srcIp, destIp);
                       counts.relayOut++;
                     }
                   }
 
-                  found = true;
                   break;
                 }
               }
 
               if (!found) {
-                sendQueryPacket(portToFd[CONTROLLER_PORT], destIp);
+                sendQueryPacket(portToFd[0], id, 0, srcIp, destIp);
                 addReceived = false;
                 counts.query++;
               }
             }
           } else if (type == "delay") {
-            /*
+            int trafficId = content[0];
+            if (id == trafficId) {
+              /*
              * Attribution:
              * https://stackoverflow.com/a/19555298
              * By: https://stackoverflow.com/users/321937/oz
              */
-            milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-            delayStartTime = ms.count();
-            delayDuration = content[0];
+              milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+              delayStartTime = ms.count();
+              delayDuration = content[0];
+              printf("Entering a delay period of %i milliseconds.\n", delayDuration);
+            }
           } else {
-            // Ignore comments or error.
+            // Ignore comments or errors.
           }
         } else {
           in.close();
@@ -388,14 +407,14 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
         switchList(flowTable, counts);
         exit(EXIT_SUCCESS);
       } else {
-        printf("Error: Unrecognized command. Please use list or exit.\n");
+        printf("Error: Unrecognized command. Please use \"list\" or \"exit\".\n");
       }
     }
 
     memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
     /*
-     * 3. Poll the incoming FIFOs from the controller and the attached switches. The switch handles
+     * 3. Poll the incoming FDs from the controller and the attached switches. The switch handles
      * each incoming packet, as described in the Packet Types section.
      */
     for (int i = 1; i < PFDS_SIZE; i++) {
@@ -405,13 +424,14 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
           close(pfds[i].fd);
           continue;
         }
+
         string packetString = string(buffer);
         pair<string, vector<int>> receivedPacket = parsePacketString(packetString);
-        string packetType = get<0>(receivedPacket);
-        vector<int> packetMessage = get<1>(receivedPacket);
+        string packetType = receivedPacket.first;
+        vector<int> msg = receivedPacket.second;
 
         string direction = "Received";
-        printPacketMessage(direction, i, id, packetType, packetMessage);
+        printPacketMessage(direction, i, id, packetType, msg);
 
         if (packetType == "ACK") {
           ackReceived = true;
@@ -421,22 +441,20 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
           FlowRule newRule;
 
-          if (packetMessage[0] == 0) {
-            newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "DROP", packetMessage[3],
-                       MIN_PRI, 1};
-          } else if (packetMessage[0] == 1) {
-            newRule = {0, MAX_IP, packetMessage[1], packetMessage[2], "FORWARD", packetMessage[3],
-                       MIN_PRI, 1};
+          if (msg[0] == 0) {
+            newRule = {0, MAX_IP, msg[1], msg[2], "DROP", msg[3], MIN_PRI, 1};
+          } else if (msg[0] == 1) {
+            newRule = {0, MAX_IP, msg[1], msg[2], "FORWARD", msg[3], MIN_PRI, 1};
 
             // Open FIFO for writing if not done so already
-            if (!portToFd.count(packetMessage[3])) {
-              string relayFifo = makeFifoName(id, portToId[packetMessage[3]]);
+            if (!portToFd.count(msg[3])) {
+              string relayFifo = makeFifoName(id, portToId[msg[3]]);
               int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
-              pair<int, int> portConnection = make_pair(packetMessage[3], portFd);
+              pair<int, int> portConnection = make_pair(msg[3], portFd);
               portToFd.insert(portConnection);
             }
 
-            sendRelayPacket(portToFd[packetMessage[3]], packetMessage[1]);
+            sendRelayPacket(portToFd[msg[3]], id, portToId[msg[3]], msg[4], msg[1]);
             counts.relayOut++;
           } else {
             printf("Error: Invalid rule to add.\n");
@@ -449,16 +467,14 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
           counts.relayIn++;
 
           // Relay the packet to an adjacent controller if the destIp is not meant for this switch
-          if (packetMessage[0] < ipLow || packetMessage[0] > ipHigh) {
+          if (msg[0] < ipLow || msg[0] > ipHigh) {
             if (id > i) {
-              sendRelayPacket(portToFd[1], packetMessage[0]);
+              sendRelayPacket(portToFd[1], id, portToId[1], msg[0], msg[1]);
               counts.relayOut++;
             } else if (id < i) {
-              sendRelayPacket(portToFd[2], packetMessage[0]);
+              sendRelayPacket(portToFd[2], id, portToId[2], msg[0], msg[1]);
               counts.relayOut++;
             }
-          } else {
-            // TODO: Print something about message being delivered successfully?
           }
         } else {
           // Unknown packet. Used for debugging.

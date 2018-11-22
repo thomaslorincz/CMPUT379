@@ -31,8 +31,6 @@ typedef struct {
 
 /**
  * Function used to close all FD connections before exiting.
- * @param numSwitches
- * @param pfds
  */
 void cleanup(int numSwitches, pollfd pfds[]) {
   for (int i = 0; i < numSwitches + 2; i++) close(pfds[i].fd);
@@ -41,46 +39,44 @@ void cleanup(int numSwitches, pollfd pfds[]) {
 
 /**
  *
- * @param numSwitches
- * @param pfds
- * @param fd
  */
-void sendAckPacket(int numSwitches, pollfd pfds[], int fd) {
+void sendAckPacket(int numSwitches, pollfd pfds[], int fd, int destId) {
   string ackString = "ACK:";
   write(fd, ackString.c_str(), strlen(ackString.c_str()));
   if (errno) {
-    perror("Failed to write");
+    perror("write() failure");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
+
+  string direction = "Transmitted";
+  string type = "ACK";
+  pair<string, vector<int>> parsedPacket = parsePacketString(ackString);
+  printPacketMessage(direction, 0, destId, type, parsedPacket.second);
 }
 
 /**
  *
- * @param numSwitches
- * @param pfds
- * @param fd
- * @param action
- * @param ipLow
- * @param ipHigh
- * @param relayId
  */
-void sendAddPacket(int numSwitches, pollfd pfds[], int fd, int action, int ipLow, int ipHigh,
-                   int relayId) {
+void sendAddPacket(int numSwitches, pollfd pfds[], int fd, int destId, int action, int ipLow,
+                   int ipHigh, int relayPort, int srcIp) {
   string addString = "ADD:" + to_string(action) + "," + to_string(ipLow) + "," + to_string(ipHigh)
-                     + "," + to_string(relayId);
+                     + "," + to_string(relayPort) + "," + to_string(srcIp);
   write(fd, addString.c_str(), strlen(addString.c_str()));
   if (errno) {
     perror("Failed to write");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
+
+  string direction = "Transmitted";
+  string type = "ADD";
+  pair<string, vector<int>> parsedPacket = parsePacketString(addString);
+  printPacketMessage(direction, 0, destId, type, parsedPacket.second);
 }
 
 /**
  * List the controller status information including switches known and packets seen.
- * @param switchInfoTable
- * @param counts
  */
 void controllerList(vector<SwitchInfo> switchInfoTable, ControllerPacketCounts &counts) {
   printf("Switch information:\n");
@@ -96,8 +92,6 @@ void controllerList(vector<SwitchInfo> switchInfoTable, ControllerPacketCounts &
 
 /**
  * Main controller event loop. Communicates with switches via TCP sockets.
- * @param numSwitches
- * @param portNumber
  */
 void controllerLoop(int numSwitches, uint16_t portNumber) {
   // Table containing info about opened switches
@@ -198,10 +192,10 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
     memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
     /*
-     * 2. Poll the incoming FIFOs from the attached switches. The controller handles each incoming
+     * 2. Poll the incoming FDs from the attached switches. The controller handles each incoming
      * packet, as described in the Packet Types section.
      */
-    for (int i = 1; i <= numSwitches; i++) {
+    for (int i = 1; i < numSwitches; i++) {
       if (pfds[i].revents & POLLIN) {
         // Check if the connection has closed
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
@@ -223,13 +217,19 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           switchInfoTable.push_back({packetMessage[0], packetMessage[1], packetMessage[2],
                                      packetMessage[3], packetMessage[4]});
           idToFd.insert({i, pfds[i].fd});
-          sendAckPacket(numSwitches, pfds, pfds[i].fd);
+          sendAckPacket(numSwitches, pfds, pfds[i].fd, i);
           counts.ack++;
         } else if (packetType == "QUERY") {
           counts.query++;
 
-          int queryIp = packetMessage[0];
-          if (queryIp > MAX_IP || queryIp < 0) {
+          int srcIp = packetMessage[0];
+          if (srcIp > MAX_IP || srcIp < 0) {
+            printf("Error: Invalid IP for QUERY. Dropping.\n");
+            continue;
+          }
+
+          int destIp = packetMessage[1];
+          if (destIp > MAX_IP || destIp < 0) {
             printf("Error: Invalid IP for QUERY. Dropping.\n");
             continue;
           }
@@ -237,7 +237,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           // Check for information in the switch info table
           bool found = false;
           for (auto &info : switchInfoTable) {
-            if (queryIp >= info.ipLow && queryIp <= info.ipHigh) {
+            if (destIp >= info.ipLow && destIp <= info.ipHigh) {
               int relayPort = 0;
 
               // Determine relay port
@@ -248,7 +248,8 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
               }
 
               // Send new rule
-              sendAddPacket(numSwitches, pfds, idToFd[i], 1, info.ipLow, info.ipHigh, relayPort);
+              sendAddPacket(numSwitches, pfds, idToFd[i], i, 1, info.ipLow, info.ipHigh, relayPort,
+                            srcIp);
 
               found = true;
               break;
@@ -257,7 +258,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
           // If nothing is found in the info table, tell the switch to drop
           if (!found) {
-            sendAddPacket(numSwitches, pfds, idToFd[i], 0, queryIp, queryIp, 0);
+            sendAddPacket(numSwitches, pfds, idToFd[i], i, 0, destIp, destIp, 0, srcIp);
           }
 
           counts.add++;
