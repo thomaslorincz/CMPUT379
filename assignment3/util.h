@@ -15,6 +15,6 @@ int parseSwitchId(const string &input);
 
 void trim(string &s);
 
-void printTransmitMessage(int srcId, int destId);
+void printPacketMessage(string &direction, int srcId, int destId, string &type, vector<int> msg);
 
 #endif

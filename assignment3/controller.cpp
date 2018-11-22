@@ -1,19 +1,11 @@
 #include <arpa/inet.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <signal.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <map>
 #include <sstream>
-#include <string>
-#include <utility>
 #include <vector>
-#include <netinet/in.h>
+#include <unistd.h>
+#include <cstring>
 #include "util.h"
 
 #define CONTROLLER_ID 0
@@ -223,7 +215,8 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
         string packetType = get<0>(receivedPacket);
         vector<int> packetMessage = get<1>(receivedPacket);
 
-        printf("Received packet: %s\n", buffer);
+        string direction = "Received";
+        printPacketMessage(direction, i, CONTROLLER_ID, packetType, packetMessage);
 
         if (packetType == "OPEN") {
           counts.open++;
@@ -287,6 +280,13 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
       pfds[socketIdx].fd = sockets[socketIdx];
       pfds[socketIdx].events = POLLIN;
       pfds[socketIdx].revents = 0;
+
+      // Set socket to non-blocking
+      if (fcntl(pfds[socketIdx].fd, F_SETFL, fcntl(pfds[socketIdx].fd, F_GETFL) | O_NONBLOCK) < 0) {
+        perror("fcntl() failure");
+        exit(errno);
+      }
+
       socketIdx++;
     }
 

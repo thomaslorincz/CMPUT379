@@ -79,20 +79,56 @@ void trim(string &s) {
   s.erase(find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); }).base(), s.end());
 }
 
-void printTransmitMessage(int srcId, int destId) {
-  string src;
-  if (srcId == 0) {
-    src = "cont";
-  } else {
-    src = "sw" + to_string(srcId);
-  }
+void printPacketMessage(string &direction, int srcId, int destId, string &type, vector<int> msg) {
+  string src = "sw" + to_string(srcId);
+  string dest = "sw" + to_string(destId);
 
-  string dest;
-  if (destId == 0) {
+  string packetString;
+  if (type == "OPEN") {
     dest = "cont";
-  } else {
-    dest = "sw" + to_string(destId);
+
+    string port1;
+    if (msg[1] == -1) {
+      port1 = "null";
+    } else {
+      port1 = "sw" + to_string(msg[1]);
+    }
+
+    string port2;
+    if (msg[2] == -1) {
+      port2 = "null";
+    } else {
+      port2 = "sw" + to_string(msg[2]);
+    }
+
+    packetString = ":\n         (port0= cont, port1= "+ port1 + ", port2= " + port2 + ", port3= " +
+                   to_string(msg[3]) + "-" + to_string(msg[4]) + ")";
+  } else if (type == "ACK") {
+    src = "cont";
+    packetString = "";
+  } else if (type == "QUERY") {
+    dest = "cont";
+
+    packetString = ":  header= (srcIP= " + to_string(msg[0]) + ", destIP= " + to_string(msg[1]) +
+                   ")";
+  } else if (type == "ADD") {
+    src = "cont";
+
+    string action;
+    if (msg[0] == 0) {
+      action = "DROP";
+    } else if (msg[0] == 1) {
+      action = "FORWARD";
+    }
+
+    packetString = ":\n         (srcIp= 0-1000, destIp= " + to_string(msg[1]) + "-" +
+                   to_string(msg[2]) + ", action= " + action + ":" + to_string(msg[3]) +
+                   ", pri= 4, pktCount= 0";
+  } else if (type == "RELAY") {
+    packetString = ":  header= (srcIP= " + to_string(msg[0]) +", destIP= " +
+                   to_string(msg[1]) + ")";
   }
 
-  printf("Transmit (src= %s, dest= %s)", src.c_str(), dest.c_str());
+  printf("%s (src= %s, dest= %s) [%s]%s\n", direction.c_str(), src.c_str(),
+         dest.c_str(), type.c_str(), packetString.c_str());
 }
