@@ -177,7 +177,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
      * packet type, the program writes an aggregate count of handled packets of this type.
      * exit: The program writes the above information and exits.
      */
-    if (poll(pfds, (nfds_t) pfdsSize, 100) == -1) { // Poll from all file descriptors
+    if (poll(pfds, (nfds_t) pfdsSize, 0) == -1) { // Poll from all file descriptors
       perror("poll() failure");
       cleanup(numSwitches, pfds);
       exit(errno);
@@ -190,7 +190,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
       }
 
       string cmd = string(buffer);
-      trim(cmd);  // Trim whitespace
+      trim(cmd); // Trim whitespace
 
       if (cmd == "list") {
         controllerList(switchInfoTable, counts);
@@ -229,8 +229,8 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           counts.open++;
           switchInfoTable.push_back({packetMessage[0], packetMessage[1], packetMessage[2],
                                      packetMessage[3], packetMessage[4]});
-          idToFd.insert({i, pfds[socketIdx].fd});
-          sendAckPacket(numSwitches, pfds, pfds[socketIdx].fd);
+          idToFd.insert({i, pfds[i].fd});
+          sendAckPacket(numSwitches, pfds, pfds[i].fd);
           counts.ack++;
         } else if (packetType == "QUERY") {
           counts.query++;
@@ -245,17 +245,17 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           bool found = false;
           for (auto &info : switchInfoTable) {
             if (queryIp >= info.ipLow && queryIp <= info.ipHigh) {
-              int relayId = 0;
+              int relayPort = 0;
 
               // Determine relay port
               if (info.id > i) {
-                relayId = 2;
+                relayPort = 2;
               } else {
-                relayId = 1;
+                relayPort = 1;
               }
 
               // Send new rule
-              sendAddPacket(numSwitches, pfds, idToFd[i], 1, info.ipLow, info.ipHigh, relayId);
+              sendAddPacket(numSwitches, pfds, idToFd[i], 1, info.ipLow, info.ipHigh, relayPort);
 
               found = true;
               break;
@@ -287,7 +287,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
       pfds[socketIdx].fd = sockets[socketIdx];
       pfds[socketIdx].events = POLLIN;
       pfds[socketIdx].revents = 0;
-      printf("DEBUG: New client socket connection, fd:%d\n", pfds[socketIdx].fd);
+      socketIdx++;
     }
 
     memset(buffer, 0, sizeof(buffer)); // Clear buffer

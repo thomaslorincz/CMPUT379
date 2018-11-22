@@ -61,7 +61,7 @@ int parseSwitchId(const string &input) {
     int switchId = (int) strtol(number.c_str(), (char **) nullptr, 10);
     if (switchId < 1 || switchId > 7 || errno) {
       printf("Error: Invalid switch ID %i. Expected 1-7.\n", switchId);
-      exit(1);
+      exit(EXIT_FAILURE);
     }
     return switchId;
   }

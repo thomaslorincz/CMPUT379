@@ -53,7 +53,7 @@ void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipH
                       + "," + to_string(ipLow) + "," + to_string(ipHigh);
   write(fd, openString.c_str(), strlen(openString.c_str()));
   if (errno) {
-    perror("Error: Failed to write.");
+    perror("write() failure");
     exit(errno);
   }
 }
@@ -62,7 +62,7 @@ void sendQueryPacket(int fd, int destIp) {
   string queryString = "QUERY:" + to_string(destIp);
   write(fd, queryString.c_str(), strlen(queryString.c_str()));
   if (errno) {
-    perror("Failed to write");
+    perror("write() failure");
     exit(errno);
   }
 }
@@ -71,7 +71,7 @@ void sendRelayPacket(int fd, int destIp) {
   string relayString = "RELAY:" + to_string(destIp);
   write(fd, relayString.c_str(), strlen(relayString.c_str()));
   if (errno) {
-    perror("Failed to write");
+    perror("write() failure");
     exit(errno);
   }
 }
@@ -126,10 +126,9 @@ void handlePacketUsingFlowTable(vector<FlowRule> &flowTable, map<int, int> &port
         if (rule.actionVal != 3) {
           // Open the FIFO for writing if not done already
           if (!portToFd.count(rule.actionVal)) {
-            string relayFifo = makeFifoName(switchId, rule.actionVal);
+            string relayFifo = makeFifoName(switchId, portToId[rule.actionVal]);
             int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
-
-            pair<int, int> portConn = make_pair(portToId[rule.actionVal], portFd);
+            pair<int, int> portConn = make_pair(rule.actionVal, portFd);
             portToFd.insert(portConn);
           }
 
@@ -204,7 +203,7 @@ void switchList(vector<FlowRule> &flowTable, SwitchPacketCounts &counts) {
   printf("Packet Stats:\n");
   printf("\tReceived:    ADMIT:%i, ACK:%i, ADDRULE:%i, RELAYIN:%i\n", counts.admit, counts.ack,
          counts.add, counts.relayIn);
-  printf("\tTransmitted: OPEN: %i, QUERY:%i, RELAYOUT: %i\n", counts.open, counts.query,
+  printf("\tTransmitted: OPEN:%i, QUERY:%i, RELAYOUT:%i\n", counts.open, counts.query,
          counts.relayOut);
 }
 
@@ -267,6 +266,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
   // Send an OPEN packet to the controller
   sendOpenPacket(pfds[socketIdx].fd, id, port1Id, port2Id, ipLow, ipHigh);
+  counts.open++;
 
   int pfdIndex = 1;
 
@@ -323,7 +323,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       }
     }
 
-    if (poll(pfds, (nfds_t) pfdsSize, 100) == -1) { // Poll from all file descriptors
+    if (poll(pfds, (nfds_t) pfdsSize, 0) == -1) { // Poll from all file descriptors
       perror("poll() failure");
       exit(errno);
     }
@@ -388,10 +388,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
             // Open FIFO for writing if not done so already
             if (!portToFd.count(packetMessage[3])) {
-              string relayFifo = makeFifoName(id, packetMessage[3]);
+              string relayFifo = makeFifoName(id, portToId[packetMessage[3]]);
               int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
-
-              pair<int, int> portConnection = make_pair(portToId[packetMessage[3]], portFd);
+              pair<int, int> portConnection = make_pair(packetMessage[3], portFd);
               portToFd.insert(portConnection);
             }
 
