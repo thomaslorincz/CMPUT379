@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -21,6 +22,7 @@
 #define MAX_BUFFER 1024
 
 using namespace std;
+using namespace chrono;
 
 typedef struct {
     int admit;
@@ -42,6 +44,17 @@ typedef struct {
     int pri;  // 0, 1, 2, 3, 4 (highest - lowest)
     int pktCount;
 } FlowRule;
+
+
+/**
+ * Attribution:
+ * https://stackoverflow.com/a/19555298
+ * By: https://stackoverflow.com/users/321937/oz
+ */
+bool isDelayed(long startTime, int duration) {
+  milliseconds currentTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+  return currentTime.count() < (startTime + duration);
+}
 
 void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipHigh) {
   string openString = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
@@ -108,10 +121,13 @@ int createFifo(int src, int dest, int flag) {
 /**
  * Parses a line in the traffic file.
  * Attribution:
- * https://stackoverflow.com/questions/236129/how-do-i-iterate-over-the-words-of-a-string
  * https://stackoverflow.com/a/237280
+ * By: https://stackoverflow.com/users/30767/zunino
  */
-tuple<int, int, int> parseTrafficFileLine(string &line) {
+tuple<string, vector<int>> parseTrafficFileLine(string &line) {
+  string type;
+  vector<int> content;
+
   int id = 0;
   int srcIp = 0;
   int destIp = 0;
@@ -119,36 +135,47 @@ tuple<int, int, int> parseTrafficFileLine(string &line) {
   istringstream iss(line);
   vector<string> tokens{istream_iterator<string>{iss}, istream_iterator<string>{}};
 
-  if (tokens[0] == "#") { // TODO: Check first character of line
-    return make_tuple(-1, -1, -1);
+  if (tokens[0] == "#") {
+    type = "comment";
   } else {
     id = parseSwitchId(tokens[0]);
 
     if (tokens[1] == "delay") {
+      type = "delay";
       int ms = (int) strtol(tokens[2].c_str(), (char **) nullptr, 10);
       if (ms < 0 || errno) {
+        type = "error";
         printf("Error: Invalid delay. Skipping line.\n");
         errno = 0;
-        return make_tuple(-1, -1, -1);
+      } else {
+        content.push_back(ms);
       }
     } else {
+      type = "action";
+      content.push_back(id);
+
       srcIp = (int) strtol(tokens[1].c_str(), (char **) nullptr, 10);
       if (srcIp < 0 || srcIp > MAX_IP || errno) {
+        type = "error";
         printf("Error: Invalid IP lower bound.\n");
         errno = 0;
-        return make_tuple(-1, -1, -1);
+      } else {
+        content.push_back(srcIp);
       }
+
 
       destIp = (int) strtol(tokens[2].c_str(), (char **) nullptr, 10);
       if (destIp < 0 || destIp > MAX_IP || errno) {
+        type = "error";
         printf("Error: Invalid IP lower bound.\n");
         errno = 0;
-        return make_tuple(-1, -1, -1);
+      } else {
+        content.push_back(destIp);
       }
     }
   }
 
-  return make_tuple(id, srcIp, destIp);
+  return make_tuple(type, content);
 }
 
 /**
@@ -256,6 +283,8 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     pfds[2].revents = 0;
   }
 
+  long delayStartTime = 0;
+  int delayDuration = 0;
   bool ackReceived = false, addReceived = true;
 
   while (true) {
@@ -264,54 +293,68 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
      * yet). The switch ignores empty lines, comment lines, and lines specifying other handling
      * switches. A packet header is considered admitted if the line specifies the current switch.
      */
-    if (ackReceived && addReceived) {
-      tuple<int, int, int> trafficInfo;
+    if (ackReceived && addReceived && !isDelayed(delayStartTime, delayDuration)) {
+      tuple<string, vector<int>> trafficInfo;
       string line;
       if (in.is_open()) {
         if (getline(in, line)) {
           trafficInfo = parseTrafficFileLine(line);
 
-          int trafficId = get<0>(trafficInfo);
-          int srcIp = get<1>(trafficInfo);
-          int destIp = get<2>(trafficInfo);
+          string type = get<0>(trafficInfo);
+          vector<int> content = get<1>(trafficInfo);
 
-          if (id != trafficId || (trafficId == -1 && srcIp == -1 && destIp == -1)) {
-            // Ignore
-          } else {
-            counts.admit++;
+          if (type == "action") {
+            int trafficId = content[0];
+            int srcIp = content[1];
+            int destIp = content[2];
 
-            // Handle the packet using the flow table
-            bool found = false;
-            for (auto &rule : flowTable) {
-              if (destIp >= rule.destIpLow && destIp <= rule.destIpHigh) {
-                rule.pktCount++;
-                if (rule.actionType == "DROP") {
-                  break;
-                } else if (rule.actionType == "FORWARD") {
-                  if (rule.actionVal != 3) {
-                    // Open the FIFO for writing if not done already
-                    if (!portToFd.count(rule.actionVal)) {
-                      string relayFifo = makeFifoName(id, portToId[rule.actionVal]);
-                      int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
-                      pair<int, int> portConn = make_pair(rule.actionVal, portFd);
-                      portToFd.insert(portConn);
+            if (id == trafficId && srcIp >= ipLow && srcIp <= ipHigh) {
+              counts.admit++;
+
+              // Handle the packet using the flow table
+              bool found = false;
+              for (auto &rule : flowTable) {
+                if (destIp >= rule.destIpLow && destIp <= rule.destIpHigh) {
+                  rule.pktCount++;
+                  if (rule.actionType == "DROP") {
+                    break;
+                  } else if (rule.actionType == "FORWARD") {
+                    if (rule.actionVal != 3) {
+                      // Open the FIFO for writing if not done already
+                      if (!portToFd.count(rule.actionVal)) {
+                        string relayFifo = makeFifoName(id, portToId[rule.actionVal]);
+                        int portFd = openFifo(relayFifo, O_WRONLY | O_NONBLOCK);
+                        pair<int, int> portConn = make_pair(rule.actionVal, portFd);
+                        portToFd.insert(portConn);
+                      }
+
+                      sendRelayPacket(portToFd[rule.actionVal], destIp);
+                      counts.relayOut++;
                     }
-
-                    sendRelayPacket(portToFd[rule.actionVal], destIp);
-                    counts.relayOut++;
                   }
-                }
 
-                found = true;
-                break;
+                  found = true;
+                  break;
+                }
+              }
+
+              if (!found) {
+                sendQueryPacket(portToFd[CONTROLLER_PORT], destIp);
+                addReceived = false;
+                counts.query++;
               }
             }
-
-            if (!found) {
-              sendQueryPacket(portToFd[CONTROLLER_PORT], destIp);
-              addReceived = false;
-              counts.query++;
-            }
+          } else if (type == "delay") {
+            /*
+             * Attribution:
+             * https://stackoverflow.com/a/19555298
+             * By: https://stackoverflow.com/users/321937/oz
+             */
+            milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+            delayStartTime = ms.count();
+            delayDuration = content[0];
+          } else {
+            // Ignore comments or error.
           }
         } else {
           in.close();
