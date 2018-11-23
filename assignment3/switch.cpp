@@ -152,7 +152,9 @@ pair<string, vector<int>> parseTrafficFileLine(string &line) {
   istringstream iss(line);
   vector<string> tokens{istream_iterator<string>{iss}, istream_iterator<string>{}};
 
-  if (tokens[0] == "#") {
+  if (line.length() < 1) {
+    type = "empty";
+  } else if (line.substr(0, 1) == "#") {
     type = "comment";
   } else {
     id = parseSwitchId(tokens[0]);
@@ -373,11 +375,11 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
              */
               milliseconds ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
               delayStartTime = ms.count();
-              delayDuration = content[0];
+              delayDuration = content[1];
               printf("Entering a delay period of %i milliseconds.\n", delayDuration);
             }
           } else {
-            // Ignore comments or errors.
+            // Ignore comments, empty lines, or errors.
           }
         } else {
           in.close();
@@ -471,7 +473,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
           counts.relayIn++;
 
           // Relay the packet to an adjacent controller if the destIp is not meant for this switch
-          if (msg[0] < ipLow || msg[0] > ipHigh) {
+          if (msg[1] < ipLow || msg[1] > ipHigh) {
             if (id > i) {
               sendRelayPacket(portToFd[1], id, portToId[1], msg[0], msg[1]);
               counts.relayOut++;
