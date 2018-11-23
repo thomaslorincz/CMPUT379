@@ -474,7 +474,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
         // Log the successful received packet
         string direction = "Received";
-        printPacketMessage(direction, i, id, packetType, msg);
+        printPacketMessage(direction, portToId[i], id, packetType, msg);
 
         if (packetType == "ACK") {
           ackReceived = true;
