@@ -1,9 +1,15 @@
-sw1 100 102
-sw1 100 200
-sw1 100 300
-sw2 200 300
-sw3 200 300
-sw2 200 100
-sw2 200 100
-sw1 100 103
-sw1 100 104
+# t2.dat: traffic file for a2sdn
+#     a3sdn cont 2 9567
+#     a3sdn sw1 trafficFile null sw2 100-110 localhost 9567
+#     a3sdn sw2 trafficFile sw1 null 200-210 localhost 9567
+
+sw1  100  102
+sw1  delay 5000
+sw1  100  200
+sw1  100  300
+sw2  200  300
+sw3  200  300
+sw2  200  100
+sw2  200  100
+sw1  100  103
+sw1  100  104

@@ -53,6 +53,8 @@ string getAddressInfo(string &address) {
         exit(EXIT_FAILURE);
     }
     inet_ntop(res->ai_family, ptr, ipAddress, 100);
+    printf("IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4,
+           ipAddress, res->ai_canonname);
     res = res->ai_next;
   }
 

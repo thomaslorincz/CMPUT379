@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <string.h>
@@ -9,8 +10,11 @@
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <tuple>
+#include <utility>
 #include <vector>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <arpa/inet.h>
 #include "util.h"
 

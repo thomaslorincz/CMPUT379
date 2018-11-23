@@ -1,9 +1,19 @@
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <map>
 #include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
+#include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
 #include "util.h"
@@ -195,7 +205,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
      * 2. Poll the incoming FDs from the attached switches. The controller handles each incoming
      * packet, as described in the Packet Types section.
      */
-    for (int i = 1; i < numSwitches; i++) {
+    for (int i = 1; i <= numSwitches; i++) {
       if (pfds[i].revents & POLLIN) {
         // Check if the connection has closed
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
