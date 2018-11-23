@@ -456,8 +456,9 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       if (pfds[i].revents & POLLIN) {
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
           if (i == socketIdx) {
-            printf("Controller closed unexpectedly. Exiting.\n");
-            exit(EXIT_FAILURE);
+            printf("Controller closed. Exiting.\n");
+            switchList(flowTable, counts);
+            exit(errno);
           } else {
             printf("Warning: Connection to sw%i closed.\n", portToId[i]);
             close(pfds[i].fd);
