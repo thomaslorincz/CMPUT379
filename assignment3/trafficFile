@@ -1,4 +1,4 @@
-# t2.dat: traffic file for a2sdn
+# a3sdn trafficFIle
 
 sw1  100  102
 sw1  delay 5000

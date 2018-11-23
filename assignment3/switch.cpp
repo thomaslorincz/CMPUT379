@@ -28,6 +28,9 @@
 using namespace std;
 using namespace chrono;
 
+/**
+ * A struct for storing the switch's packet counts
+ */
 typedef struct {
     int admit;
     int ack;
@@ -38,6 +41,9 @@ typedef struct {
     int relayOut;
 } SwitchPacketCounts;
 
+/**
+ * A struct representing a rule in the flow table
+ */
 typedef struct {
     int srcIpLow;
     int srcIpHigh;
@@ -49,8 +55,8 @@ typedef struct {
     int pktCount;
 } FlowRule;
 
-
 /**
+ * Determines whether the switch is still delayed
  * Attribution:
  * https://stackoverflow.com/a/19555298
  * By: https://stackoverflow.com/users/321937/oz
@@ -64,6 +70,9 @@ bool isDelayed(long startTime, int duration) {
   return currentTime.count() < (startTime + duration);
 }
 
+/**
+ * Sends an OPEN packet to the controller.
+ */
 void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipHigh) {
   string openString = "OPEN:" + to_string(id) + "," + to_string(port1Id) + "," + to_string(port2Id)
                       + "," + to_string(ipLow) + "," + to_string(ipHigh);
@@ -73,12 +82,16 @@ void sendOpenPacket(int fd, int id, int port1Id, int port2Id, int ipLow, int ipH
     exit(errno);
   }
 
+  // Log the successful transmission
   string direction = "Transmitted";
   string type = "OPEN";
   pair<string, vector<int>> parsedPacket = parsePacketString(openString);
   printPacketMessage(direction, id, 0, type, parsedPacket.second);
 }
 
+/**
+ * Send a QUERY packet to the controller.
+ */
 void sendQueryPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
   string queryString = "QUERY:" + to_string(srcIp) + "," + to_string(destIp);
   write(fd, queryString.c_str(), strlen(queryString.c_str()));
@@ -87,12 +100,16 @@ void sendQueryPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
     exit(errno);
   }
 
+  // Log the successful transmission
   string direction = "Transmitted";
   string type = "QUERY";
   pair<string, vector<int>> parsedPacket = parsePacketString(queryString);
   printPacketMessage(direction, srcId, destId, type, parsedPacket.second);
 }
 
+/**
+ * Send a relay packet to another switch.
+ */
 void sendRelayPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
   string relayString = "RELAY:" + to_string(srcIp) + "," + to_string(destIp);
   write(fd, relayString.c_str(), strlen(relayString.c_str()));
@@ -101,6 +118,7 @@ void sendRelayPacket(int fd, int srcId, int destId, int srcIp, int destIp) {
     exit(errno);
   }
 
+  // Log the successful transmission
   string direction = "Transmitted";
   string type = "RELAY";
   pair<string, vector<int>> parsedPacket = parsePacketString(relayString);
@@ -219,8 +237,8 @@ void switchList(vector<FlowRule> &flowTable, SwitchPacketCounts &counts) {
 }
 
 /**
- * Main event loop for the switch. Polls all input FIFOS.
- * Sends and receives packets of varying types.
+ * Main event loop for the switch. Polls all FDs. Sends and receives packets of varying types to
+ * communicate within the SDN.
  */
 void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstream &in,
                 string &ipAdress, uint16_t portNumber) {
@@ -301,11 +319,13 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     pfds[2].revents = 0;
   }
 
+  // Used to keep track of the delay interval of the switch
   long delayStartTime = 0;
   int delayDuration = 0;
-  bool ackReceived = false, addReceived = true;
 
-  vector<int> closed;
+  bool ackReceived = false, addReceived = true; // Used to wait for controller responses.
+
+  vector<int> closed; // Keep track of which ports are closed
 
   while (true) {
     /*
@@ -376,7 +396,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
           } else if (type == "delay") {
             int trafficId = content[0];
             if (id == trafficId) {
-              /*
+            /*
              * Attribution:
              * https://stackoverflow.com/a/19555298
              * By: https://stackoverflow.com/users/321937/oz
@@ -395,7 +415,8 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
       }
     }
 
-    if (poll(pfds, (nfds_t) PFDS_SIZE, 0) == -1) { // Poll from all file descriptors
+    // Poll from all file descriptors
+    if (poll(pfds, (nfds_t) PFDS_SIZE, 0) == -1) {
       perror("poll() failure");
       exit(errno);
     }
@@ -450,6 +471,7 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
         string packetType = receivedPacket.first;
         vector<int> msg = receivedPacket.second;
 
+        // Log the successful received packet
         string direction = "Received";
         printPacketMessage(direction, i, id, packetType, msg);
 

@@ -17,9 +17,9 @@
 using namespace std;
 
 /**
+ * Function used to get the IP address from a specified IP or symbolic name.
+ * Attribution:
  * http://www.logix.cz/michal/devel/various/getaddrinfo.c.xp
- * @param address
- * @return
  */
 string getAddressInfo(string &address) {
   struct addrinfo hints {}, *res;

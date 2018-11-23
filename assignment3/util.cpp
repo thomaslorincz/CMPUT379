@@ -30,7 +30,7 @@ vector<int> parsePacketMessage(string &message) {
 }
 
 /**
- * Returns FIFO name based on sender and reciever IDs
+ * Returns FIFO name based on sender and receiver IDs
  */
 string makeFifoName(int senderId, int receiverId) {
   return "fifo-" + to_string(senderId) + "-" + to_string(receiverId);
@@ -79,6 +79,9 @@ void trim(string &s) {
   s.erase(find_if(s.rbegin(), s.rend(), [](int ch) { return !isspace(ch); }).base(), s.end());
 }
 
+/**
+ * Print a formatted message based on a transmitted/received packet.
+ */
 void printPacketMessage(string &direction, int srcId, int destId, string &type, vector<int> msg) {
   string src = "sw" + to_string(srcId);
   string dest = "sw" + to_string(destId);

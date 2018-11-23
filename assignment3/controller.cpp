@@ -25,6 +25,9 @@
 
 using namespace std;
 
+/**
+ * A struct for storing the controller's packet counts
+ */
 typedef struct {
     int open;
     int query;
@@ -32,6 +35,9 @@ typedef struct {
     int ack;
 } ControllerPacketCounts;
 
+/**
+ * A struct that represents the information of a switch
+ */
 typedef struct {
     int id;
     int port1Id;
@@ -49,7 +55,7 @@ void cleanup(int numSwitches, pollfd pfds[]) {
 }
 
 /**
- *
+ * Sends an ACK packet to a connected switch.
  */
 void sendAckPacket(int numSwitches, pollfd pfds[], int fd, int destId) {
   string ackString = "ACK:";
@@ -60,6 +66,7 @@ void sendAckPacket(int numSwitches, pollfd pfds[], int fd, int destId) {
     exit(errno);
   }
 
+  // Log the successful packet transmission
   string direction = "Transmitted";
   string type = "ACK";
   pair<string, vector<int>> parsedPacket = parsePacketString(ackString);
@@ -67,7 +74,7 @@ void sendAckPacket(int numSwitches, pollfd pfds[], int fd, int destId) {
 }
 
 /**
- *
+ * Sends an ADD packet to a connected switch.
  */
 void sendAddPacket(int numSwitches, pollfd pfds[], int fd, int destId, int action, int ipLow,
                    int ipHigh, int relayPort, int srcIp) {
@@ -80,6 +87,7 @@ void sendAddPacket(int numSwitches, pollfd pfds[], int fd, int destId, int actio
     exit(errno);
   }
 
+  // Log the successful packet transmission.
   string direction = "Transmitted";
   string type = "ADD";
   pair<string, vector<int>> parsedPacket = parsePacketString(addString);
@@ -167,7 +175,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
     exit(errno);
   }
 
-  vector<int> closed;
+  vector<int> closed; // Keeps track of closed switches
 
   while (true) {
     /*
@@ -198,7 +206,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
         cleanup(numSwitches, pfds);
         exit(EXIT_SUCCESS);
       } else {
-        printf("Error: Unrecognized command. Please use 'list' or 'exit'.\n");
+        printf("Error: Unrecognized command. Please use \"list\" or \"exit\".\n");
       }
     }
 
@@ -223,6 +231,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
         string packetType = get<0>(receivedPacket);
         vector<int> packetMessage = get<1>(receivedPacket);
 
+        // Log the successful received packet
         string direction = "Received";
         printPacketMessage(direction, i, CONTROLLER_ID, packetType, packetMessage);
 
