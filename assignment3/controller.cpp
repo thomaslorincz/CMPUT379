@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <string>
@@ -115,7 +116,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
 
   // Set up indices for easy reference
   int pfdsSize = numSwitches + 2;
-  int mainSocketIdx = pfdsSize - 1;
+  int mainSocket = pfdsSize - 1;
 
   struct pollfd pfds[pfdsSize];
   char buffer[MAX_BUFFER];
@@ -131,18 +132,18 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   socklen_t sinLength = sizeof(sin), fromLength = sizeof(from);
 
   // Create a managing socket
-  if ((pfds[mainSocketIdx].fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+  if ((pfds[mainSocket].fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     perror("Error: Could not create socket.\n");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
   // Prepare for non-blocking I/O polling from the managing socket
-  pfds[mainSocketIdx].events = POLLIN;
-  pfds[mainSocketIdx].revents = 0;
+  pfds[mainSocket].events = POLLIN;
+  pfds[mainSocket].revents = 0;
 
   // Set socket options
   int opt = 1;
-  if (setsockopt(pfds[mainSocketIdx].fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+  if (setsockopt(pfds[mainSocket].fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
     perror("Error: Could not set socket options.\n");
     cleanup(numSwitches, pfds);
     exit(errno);
@@ -153,18 +154,20 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
   sin.sin_addr.s_addr = htonl(INADDR_ANY);
   sin.sin_port = htons(portNumber);
 
-  if (bind(pfds[mainSocketIdx].fd, (struct sockaddr *) &sin, sinLength) < 0) {
+  if (bind(pfds[mainSocket].fd, (struct sockaddr *) &sin, sinLength) < 0) {
     perror("bind() failure");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
 
   // Indicate how many connection requests can be queued
-  if (listen(pfds[mainSocketIdx].fd, numSwitches) < 0) {
+  if (listen(pfds[mainSocket].fd, numSwitches) < 0) {
     perror("listen() failure");
     cleanup(numSwitches, pfds);
     exit(errno);
   }
+
+  vector<int> closed;
 
   while (true) {
     /*
@@ -211,6 +214,7 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
           printf("Warning: Connection to sw%d closed.\n", i);
           close(pfds[i].fd);
+          closed.push_back(i);
           continue;
         }
 
@@ -227,7 +231,10 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           switchInfoTable.push_back({packetMessage[0], packetMessage[1], packetMessage[2],
                                      packetMessage[3], packetMessage[4]});
           idToFd.insert({i, pfds[i].fd});
-          sendAckPacket(numSwitches, pfds, pfds[i].fd, i);
+          // Ensure switch is not closed before sending
+          if (find(closed.begin(), closed.end(), i) == closed.end()) {
+            sendAckPacket(numSwitches, pfds, pfds[i].fd, i);
+          }
           counts.ack++;
         } else if (packetType == "QUERY") {
           counts.query++;
@@ -248,6 +255,8 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
           bool found = false;
           for (auto &info : switchInfoTable) {
             if (destIp >= info.ipLow && destIp <= info.ipHigh) {
+              found = true;
+
               int relayPort = 0;
 
               // Determine relay port
@@ -257,18 +266,23 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
                 relayPort = 1;
               }
 
-              // Send new rule
-              sendAddPacket(numSwitches, pfds, idToFd[i], i, 1, info.ipLow, info.ipHigh, relayPort,
-                            srcIp);
+              // Ensure switch is not closed before sending
+              if (find(closed.begin(), closed.end(), i) == closed.end()) {
+                // Send new rule
+                sendAddPacket(numSwitches, pfds, idToFd[i], i, 1, info.ipLow, info.ipHigh,
+                              relayPort, srcIp);
+              }
 
-              found = true;
               break;
             }
           }
 
           // If nothing is found in the info table, tell the switch to drop
           if (!found) {
-            sendAddPacket(numSwitches, pfds, idToFd[i], i, 0, destIp, destIp, 0, srcIp);
+            // Ensure switch is not closed before sending
+            if (find(closed.begin(), closed.end(), i) == closed.end()) {
+              sendAddPacket(numSwitches, pfds, idToFd[i], i, 0, destIp, destIp, 0, srcIp);
+            }
           }
 
           counts.add++;
@@ -281,9 +295,9 @@ void controllerLoop(int numSwitches, uint16_t portNumber) {
     memset(buffer, 0, sizeof(buffer)); // Clear buffer
 
     // Check the socket file descriptor for events
-    if (pfds[mainSocketIdx].revents & POLLIN) {
+    if (pfds[mainSocket].revents & POLLIN) {
       if ((sockets[socketIdx] =
-               accept(pfds[mainSocketIdx].fd, (struct sockaddr *) &from, &fromLength)) < 0) {
+               accept(pfds[mainSocket].fd, (struct sockaddr *) &from, &fromLength)) < 0) {
         perror("accept() failure");
         cleanup(numSwitches, pfds);
         exit(errno);

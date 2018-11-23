@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -304,6 +305,8 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
   int delayDuration = 0;
   bool ackReceived = false, addReceived = true;
 
+  vector<int> closed;
+
   while (true) {
     /*
      * 1. Read and process a single line from the traffic line (if the EOF has not been reached
@@ -350,7 +353,12 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
                         portToFd.insert(portConn);
                       }
 
-                      sendRelayPacket(portToFd[rule.actionVal], id, portToId[rule.actionVal], srcIp, destIp);
+                      // Ensure switch is not closed before sending
+                      if (find(closed.begin(), closed.end(), rule.actionVal) == closed.end()) {
+                        sendRelayPacket(portToFd[rule.actionVal], id, portToId[rule.actionVal],
+                                        srcIp, destIp);
+                      }
+
                       counts.relayOut++;
                     }
                   }
@@ -426,9 +434,15 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
     for (int i = 1; i < PFDS_SIZE; i++) {
       if (pfds[i].revents & POLLIN) {
         if (!read(pfds[i].fd, buffer, MAX_BUFFER)) {
-          printf("Warning: Connection closed.\n"); // TODO: Connection to where?
-          close(pfds[i].fd);
-          continue;
+          if (i == socketIdx) {
+            printf("Controller closed unexpectedly. Exiting.\n");
+            exit(EXIT_FAILURE);
+          } else {
+            printf("Warning: Connection to sw%i closed.\n", portToId[i]);
+            close(pfds[i].fd);
+            closed.push_back(i);
+            continue;
+          }
         }
 
         string packetString = string(buffer);
@@ -460,7 +474,11 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
               portToFd.insert(portConnection);
             }
 
-            sendRelayPacket(portToFd[msg[3]], id, portToId[msg[3]], msg[4], msg[1]);
+            // Ensure switch is not closed before sending
+            if (find(closed.begin(), closed.end(), i) == closed.end()) {
+              sendRelayPacket(portToFd[msg[3]], id, portToId[msg[3]], msg[4], msg[1]);
+            }
+
             counts.relayOut++;
           } else {
             printf("Error: Invalid rule to add.\n");
@@ -474,12 +492,15 @@ void switchLoop(int id, int port1Id, int port2Id, int ipLow, int ipHigh, ifstrea
 
           // Relay the packet to an adjacent controller if the destIp is not meant for this switch
           if (msg[1] < ipLow || msg[1] > ipHigh) {
-            if (id > i) {
-              sendRelayPacket(portToFd[1], id, portToId[1], msg[0], msg[1]);
-              counts.relayOut++;
-            } else if (id < i) {
-              sendRelayPacket(portToFd[2], id, portToId[2], msg[0], msg[1]);
-              counts.relayOut++;
+            // Ensure switch is not closed before sending
+            if (find(closed.begin(), closed.end(), i) == closed.end()) {
+              if (id > i) {
+                sendRelayPacket(portToFd[1], id, portToId[1], msg[0], msg[1]);
+                counts.relayOut++;
+              } else if (id < i) {
+                sendRelayPacket(portToFd[2], id, portToId[2], msg[0], msg[1]);
+                counts.relayOut++;
+              }
             }
           }
         } else {
