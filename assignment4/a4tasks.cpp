@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <map>
+#include <sys/resource.h>
 #include <sys/times.h>
 #include <cstring>
 #include <pthread.h>
@@ -11,17 +12,18 @@
 #define NTASKS 25
 #define MAX_NAME_LEN 32
 #define MAX_FILENAME_LEN 255
+#define MAX_LINE_LEN 200
 
 using namespace std;
 
-typedef enum {WAIT, RUN, IDLE} Status;
+typedef enum {WAIT, RUN, IDLE} task_status;
 
 typedef struct {
     bool isAssigned;
-    int busyTime;
-    int idleTime;
     int timesExecuted;
-    Status status;
+    task_status status;
+    long busyTime;
+    long idleTime;
     long totalBusyTime;
     long totalIdleTime;
     long totalWaitTime;
@@ -29,16 +31,13 @@ typedef struct {
     vector<string> requiredResources;
 } Task;
 
-map<string, int> resources;
-vector<Task> taskList;
-
-pthread_mutex_t threadMutex;
-pthread_mutex_t iterationMutex;
-pthread_mutex_t monitorMutex; // Used for monitor to prevent states from switching
-pthread_t taskThreadList[NTASKS];
-
+// Global variables
 int nIter = 0; // The simulator finishes when each task in the system executes nIter times
-static long clktck = 0;
+long clockTickRate = 0; // Clock ticks per second - used in printing timing information
+map<string, int> resources; // Global map of resource names to resource amounts
+vector<Task> taskList; // Global list of tasks
+pthread_mutex_t threadMutex, iterationMutex, monitorMutex; // Mutexes
+pthread_t taskThreadList[NTASKS]; // Global list of task threads
 
 /**
  * A utility function for converting string inputs into integers. Handles strtol() failures.
@@ -46,7 +45,7 @@ static long clktck = 0;
 int strToInt(char *stringInput) {
   int output = (int) strtol(stringInput, (char **) nullptr, 10);
   if (errno) {
-    printf("Invalid input: %s\n", stringInput);
+    printf("Invalid strToInt input: %s\n", stringInput);
     perror("strtol() failure");
     exit(errno);
   }
@@ -54,7 +53,7 @@ int strToInt(char *stringInput) {
 }
 
 /**
- * TODO
+ * Suspend the execution of the calling thread.
  */
 void delay(long milliseconds) {
   struct timespec interval{
@@ -63,12 +62,13 @@ void delay(long milliseconds) {
   };
   nanosleep(&interval, nullptr);
   if (errno) {
-    perror("nanosleep() failure: unable to set delay");
+    perror("nanosleep() failure");
+    exit(errno);
   }
 }
 
 /**
- * TODO
+ * Utility function for initializing a new pthread mutex.
  */
 void initMutex(pthread_mutex_t *mutex) {
   int error = pthread_mutex_init(mutex, nullptr);
@@ -79,7 +79,7 @@ void initMutex(pthread_mutex_t *mutex) {
 }
 
 /**
- * TODO
+ * Utility function for locking a pthread mutex.
  */
 void lockMutex(pthread_mutex_t *mutex) {
   int error = pthread_mutex_lock(mutex);
@@ -90,7 +90,7 @@ void lockMutex(pthread_mutex_t *mutex) {
 }
 
 /**
- * TODO
+ * Utility function for unlocking a pthread mutex.
  */
 void unlockMutex(pthread_mutex_t *mutex) {
   int error = pthread_mutex_unlock(mutex);
@@ -112,12 +112,15 @@ void monitorPrint() {
     if (task.status == WAIT) {
       waitString.append(task.name);
       waitString.append(" ");
-    } else if(task.status == RUN) {
+    } else if (task.status == RUN) {
       runString.append(task.name);
       runString.append(" ");
-    } else {
+    } else if (task.status == IDLE) {
       idleString.append(task.name);
       idleString.append(" ");
+    } else {
+      printf("Error: Unknown task status %i\n", task.status);
+      exit(EXIT_FAILURE);
     }
   }
 
@@ -138,25 +141,24 @@ void *monitorThread(void *arg) {
 }
 
 /**
- * Parse out a resource line. (e.g. resources a:1 b:2)
+ * Parse a resource line from the input file.
  */
 void parseResourceLine(char *resourceLine) {
-  char *temp;
-  char line[100];
-  vector<char*> resourceStrings;
+  vector<char*> resourceTokens;
 
+  char line[MAX_LINE_LEN];
   strcpy(line, resourceLine);
 
   // Parse all the name:value pairs
-  temp = strtok(nullptr, " ");
-  while (temp != nullptr) {
-    resourceStrings.push_back(temp);
-    temp = strtok(nullptr, " ");
+  char *token = strtok(nullptr, " ");
+  while (token != nullptr) {
+    resourceTokens.push_back(token);
+    token = strtok(nullptr, " ");
   }
 
-  for (auto &resourceString : resourceStrings) {
-    string tempName(strtok(resourceString, ":"));
-    resources[tempName] = strToInt(strtok(nullptr, ":"));
+  for (auto &resourceToken : resourceTokens) {
+    string resourceName(strtok(resourceToken, ":"));
+    resources[resourceName] = strToInt(strtok(nullptr, ":"));
   }
 }
 
@@ -177,25 +179,24 @@ void parseTaskFile(char *taskFilePath) {
       // Ignore comments and whitespace
       if (lineString[0] == '#' || lineString[0] == '\r' || lineString[0] == '\n') continue;
 
-      char cline[100];
-      strcpy(cline, lineString.c_str());
+      char line[MAX_LINE_LEN];
+      strcpy(line, lineString.c_str());
 
-      char *lineType = strtok(cline, " ");
+      char *lineType = strtok(line, " ");
       if (!(strcmp(lineType, "resources") == 0 || strcmp(lineType, "task") == 0)) {
         printf("Error: Unknown line type %s. Expected 'resource' or 'task'.\n", lineType);
         exit(EXIT_FAILURE);
       }
 
       if (strcmp(lineType, "resources") == 0) {
-        // we need to define the resources that will be used
-        strcpy(cline, lineString.c_str());
-        parseResourceLine(cline);
+        strcpy(line, lineString.c_str());
+        parseResourceLine(line);
       } else {
         Task newTask;
 
         strcpy(newTask.name, strtok(nullptr, " "));
-        newTask.busyTime = (int) strtol(strtok(nullptr, " "), (char **) nullptr, 10);
-        newTask.idleTime = (int) strtol(strtok(nullptr, " "), (char **) nullptr, 10);
+        newTask.busyTime = strtol(strtok(nullptr, " "), (char **) nullptr, 10);
+        newTask.idleTime = strtol(strtok(nullptr, " "), (char **) nullptr, 10);
         newTask.isAssigned = false;
         newTask.status = IDLE;
         newTask.totalIdleTime = 0;
@@ -219,16 +220,15 @@ void parseTaskFile(char *taskFilePath) {
 }
 
 /**
- * Called by a task needs to check if their are resources up for grabs. If none are the task goes
- * back to waiting.
+ * Determines if the Task has all the resources it needs to run.
  */
 bool hasEnoughResources(Task *task) {
   for (auto &reqResource : task->requiredResources) {
     char resource[MAX_NAME_LEN];
     strcpy(resource, reqResource.c_str());
-    char *resName = strtok(resource, ":");
+    char *resourceName = strtok(resource, ":");
 
-    if (resources[resName] < strToInt(strtok(nullptr, ":"))) return false;
+    if (resources[resourceName] < strToInt(strtok(nullptr, ":"))) return false;
   }
   return true;
 }
@@ -246,29 +246,27 @@ void assignResources(Task *task) {
 }
 
 /**
- * Return the appropriate amount of resources used by a {@code Task} back to the global resource
+ * Return the amount of resources used by the Task back to the global resource
  * list.
  */
 void returnResources(Task *task) {
   for (auto &reqResource : task->requiredResources) {
     char resource[MAX_NAME_LEN];
     strcpy(resource, reqResource.c_str());
-    char* resName = strtok(resource, ":");
-    resources[resName] += strToInt(strtok(nullptr, ":"));
+    char *resourceName = strtok(resource, ":");
+    resources[resourceName] += strToInt(strtok(nullptr, ":"));
   }
 }
 
 /**
- * After a {@code Task} is created it needs to run its specified amount of iterations. This provides
- * controller logic as to make sure other mutexes don't encounter race conditions with other
- * threads. While allowing the {@code Task} to run until its specified number of iterations is met.
+ * Run Task iterations while using controller logic to avoid race conditions.
  */
 void runIterations(Task *task) {
   int iterationCounter = 0;
-  clock_t waitStart, waitFinish; //used to determine how long a task will wait
+  clock_t waitStart, waitFinish;
   struct tms tmswaitstart{}, tmswaitend{};
 
-  lockMutex(&monitorMutex); //make sure cannot change state if monitor is printing
+  lockMutex(&monitorMutex);
   task->status = WAIT;
   unlockMutex(&monitorMutex);
 
@@ -276,32 +274,32 @@ void runIterations(Task *task) {
   while (true) {
     lockMutex(&iterationMutex);
 
-    // check if resources are available to grab, if not then unlock and go back to waiting
     if (!hasEnoughResources(task)) {
       unlockMutex(&iterationMutex);
       delay(100); // Slight delay before continuing
       continue;
     }
 
-    assignResources(task); // Assign resources to task from shared resource pool
+    // Assign resources to task from shared resource pool
+    assignResources(task);
     waitFinish = times(&tmswaitend);
-    task->totalWaitTime += ((waitFinish - waitStart) / clktck) * 1000;
+    task->totalWaitTime += ((waitFinish - waitStart) / clockTickRate) * 1000;
     unlockMutex(&iterationMutex);
 
-    // after resources are taken, simulate the execution of the process
-    lockMutex(&monitorMutex); // cant switch states if monitor is printing
+    // After resources are taken, simulate the execution of the process
+    lockMutex(&monitorMutex);
     task->status = RUN;
     unlockMutex(&monitorMutex);
     delay(task->busyTime);
     task->totalBusyTime += task->busyTime;
 
-    // after running the busytime then return the resources back to the pool
+    // After running the busy time then return the resources back to the pool
     lockMutex(&iterationMutex);
     returnResources(task);
     unlockMutex(&iterationMutex);
 
-    // now we wait for idle time and increment iteration counter
-    lockMutex(&monitorMutex); // cant switch states if monitor printing
+    // Wait for idle time and increment iteration counter
+    lockMutex(&monitorMutex);
     task->status = IDLE;
     unlockMutex(&monitorMutex);
 
@@ -312,7 +310,7 @@ void runIterations(Task *task) {
 
     if (iterationCounter == nIter) return;
 
-    lockMutex(&monitorMutex); // cant switch states if monitor printing
+    lockMutex(&monitorMutex);
     task->status = WAIT;
     unlockMutex(&monitorMutex);
     waitStart = times(&tmswaitstart);
@@ -320,8 +318,7 @@ void runIterations(Task *task) {
 }
 
 /**
- * Starting method for when a new task thread is created.
- * @param arg {@code long}
+ * Assigns a task to a new thread and executes the task.
  */
 void *executeThread(void *arg) {
   taskThreadList[(long)arg] = pthread_self();
@@ -339,8 +336,8 @@ void *executeThread(void *arg) {
 }
 
 /**
- * Print information about the simulator. (e.g. resource info, task info, total runtime).
- * Should be invoked before termination of the simulator.
+ * After all other threads finish, the main thread prints information about system resources and
+ * system tasks according to the format in the assignment specification.
  */
 void printTerminationInfo() {
   map<string, int>::iterator itr;
@@ -368,11 +365,10 @@ void printTerminationInfo() {
 
     // Print the required resources
     for (auto &reqResource : taskList.at(i).requiredResources) {
-      char *resourceName;
       char resourceString[MAX_NAME_LEN];
       strcpy(resourceString, reqResource.c_str());
-      resourceName = strtok(resourceString, ":");
 
+      char *resourceName = strtok(resourceString, ":");
       printf("\t %s: (needed=\t%d, held= 0)\n", resourceName, strToInt(strtok(nullptr, ":")));
     }
 
@@ -382,40 +378,46 @@ void printTerminationInfo() {
 }
 
 int main(int argc, char **argv) {
+  // Set a 10 minute CPU time limit
+  rlimit timeLimit{.rlim_cur = 600, .rlim_max = 600};
+  setrlimit(RLIMIT_CPU, &timeLimit);
+
   if (argc != 4) {
     printf("Error: Invalid arguments. Expected 'a4tasks inputFile monitorTime nIter'\n");
     exit(EXIT_FAILURE);
   }
 
+  // Parse input file name
   string inputFile = argv[1];
+  char fileName[MAX_FILENAME_LEN];
+  strcpy(fileName, inputFile.c_str());
+
+  // Parse monitor time interval
   long monitorTime = strtol(argv[2], (char **) nullptr, 10);
   if (errno) {
     perror("Invalid monitorTime: strtol() failure");
     return errno;
   }
 
+  // Parse number of task iterations
   nIter = (uint) strtol(argv[3], (char **) nullptr, 10);
   if (errno) {
     perror("Invalid nIter: strtol() failure");
     return errno;
   }
 
-  char fileName[MAX_FILENAME_LEN];
-  strcpy(fileName, inputFile.c_str());
-
   initMutex(&threadMutex);
   initMutex(&iterationMutex);
   initMutex(&monitorMutex);
 
   // Get number of clock cycles per second. Used for timing functions
-  if (clktck == 0) {
-    if ((clktck = sysconf(_SC_CLK_TCK)) < 0) {
-      perror("sysconf() failure");
-      return errno;
-    }
+  clockTickRate = sysconf(_SC_CLK_TCK);
+  if (errno) {
+    perror("sysconf() failure");
+    return errno;
   }
 
-  parseTaskFile(fileName);
+  parseTaskFile(fileName); // Parse task file and populate global lists
 
   pthread_t newPthreadId;
 
@@ -427,7 +429,7 @@ int main(int argc, char **argv) {
   }
 
   // Create a new pthread for every task in the task list
-  for (long i = 0; i < taskList.size(); i++) {
+  for (unsigned long i = 0; i < taskList.size(); i++) {
     lockMutex(&threadMutex);
     pthread_create(&newPthreadId, nullptr, executeThread, (void *) i);
     if (errno) {
@@ -436,10 +438,10 @@ int main(int argc, char **argv) {
     }
   }
 
-  delay(400);
+  delay(500); // Give delay before waiting on threads
 
   // Wait for all other threads to complete before continuing
-  for (long i = 0; i < taskList.size(); i++) {
+  for (unsigned long i = 0; i < taskList.size(); i++) {
     pthread_join(taskThreadList[i], nullptr);
     if (errno) {
       perror("pthread_join() failure");
