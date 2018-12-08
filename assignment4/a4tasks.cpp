@@ -261,7 +261,7 @@ void returnResources(Task *task) {
 /**
  * Run Task iterations while using controller logic to avoid race conditions.
  */
-void runIterations(Task *task) {
+void executeIterations(Task *task) {
   int iterationCounter = 0;
   clock_t waitStart, waitFinish;
   struct tms tmswaitstart{}, tmswaitend{};
@@ -328,7 +328,7 @@ void *executeThread(void *arg) {
     if (task.isAssigned) continue;
     task.isAssigned = true;
     unlockMutex(&threadMutex); // Release mutex for next thread and jump to main loop
-    runIterations(&task);
+    executeIterations(&task);
     break;
   }
 
@@ -377,6 +377,14 @@ void printTerminationInfo() {
   }
 }
 
+/**
+ * Main function. Processes the input file, the monitor time (in ms), and the number of iterations
+ * of each task a thread must execute. Once the parameters are processed, the input file is parsed.
+ * Based on the input file, mutexes are created for each thread. A mutex is also created for the
+ * monitor thread so that appropriate locking is in place for when the monitor prints its status.
+ * Once all threads have finished their tasks, the program will print information about all
+ * system resources, then exit.
+ */
 int main(int argc, char **argv) {
   // Set a 10 minute CPU time limit
   rlimit timeLimit{.rlim_cur = 600, .rlim_max = 600};
